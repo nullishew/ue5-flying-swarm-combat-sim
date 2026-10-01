@@ -25,6 +25,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<class UCameraComponent> Camera;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapons", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USceneComponent> FireOrigin;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Ship|Visual")
 	TObjectPtr<USceneComponent> ShipVisualRoot;
 
@@ -61,6 +64,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> LookAction;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UInputAction> FireAction;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapons", meta = (ClampMin = "1.0"))
+	float AimTraceDistance = 100000.0f;
+
+	/** Called for every shot. Blueprints can render a transient beam and a marker when HitResult blocks. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Weapons")
+	void OnShotResolved(const FVector& BeamStart, const FVector& BeamEnd, const FHitResult& HitResult);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
@@ -73,6 +86,7 @@ protected:
 
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
+	void Fire();
 
 public:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;

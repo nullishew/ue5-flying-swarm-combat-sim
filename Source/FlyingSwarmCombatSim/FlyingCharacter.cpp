@@ -3,6 +3,7 @@
 #include "FlyingCharacter.h"
 
 #include "Camera/CameraComponent.h"
+#include "CollisionQueryParams.h"
 #include "Components/SceneComponent.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -26,6 +27,9 @@ AFlyingCharacter::AFlyingCharacter()
 
 	ShipVisualRoot = CreateDefaultSubobject<USceneComponent>(TEXT("ShipVisualRoot"));
 	ShipVisualRoot->SetupAttachment(GetRootComponent());
+
+	FireOrigin = CreateDefaultSubobject<USceneComponent>(TEXT("FireOrigin"));
+	FireOrigin->SetupAttachment(ShipVisualRoot);
 
 	// The pawn/capsule stays upright. Camera pitch is represented by the visual pivot instead.
 	bUseControllerRotationYaw = true;
@@ -129,6 +133,11 @@ void AFlyingCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 
 	EnhancedInput->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AFlyingCharacter::Move);
 	EnhancedInput->BindAction(LookAction, ETriggerEvent::Triggered, this, &AFlyingCharacter::Look);
+
+	if (ensureMsgf(FireAction, TEXT("Assign IA_Fire on the AFlyingCharacter Blueprint defaults.")))
+	{
+		EnhancedInput->BindAction(FireAction, ETriggerEvent::Started, this, &AFlyingCharacter::Fire);
+	}
 }
 
 void AFlyingCharacter::Move(const FInputActionValue& Value)
@@ -154,4 +163,42 @@ void AFlyingCharacter::Look(const FInputActionValue& Value)
 	AddControllerYawInput(LookInput.X);
 	AddControllerPitchInput(LookInput.Y);
 
+}
+
+void AFlyingCharacter::Fire()
+{
+	UE_LOG(LogTemp, Warning, TEXT("AFlyingCharacter::Fire() called"));
+	if (!IsValid(FireOrigin) || !IsValid(Camera) || !GetWorld())
+	{
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("AFlyingCharacter::Fire() worked"));
+
+
+	const FVector CameraLocation = Camera->GetComponentLocation();
+	const FVector CameraEnd = CameraLocation + Camera->GetForwardVector() * AimTraceDistance;
+	FHitResult AimHit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PlayerFireAim), true, this);
+	const bool bHasAimHit = GetWorld()->LineTraceSingleByChannel(
+		AimHit,
+		CameraLocation,
+		CameraEnd,
+		ECC_Visibility,
+		QueryParams);
+	const FVector AimPoint = bHasAimHit ? AimHit.ImpactPoint : CameraEnd;
+
+	const FVector BeamStart = FireOrigin->GetComponentLocation();
+	FHitResult ShotHit;
+	const bool bShotBlocked = GetWorld()->LineTraceSingleByChannel(
+		ShotHit,
+		BeamStart,
+		AimPoint,
+		ECC_Visibility,
+		QueryParams);
+	const FVector BeamEnd = bShotBlocked ? ShotHit.ImpactPoint : AimPoint;
+
+	// Prefer the muzzle trace for nearby obstruction, but preserve the camera hit
+	// when the muzzle trace ends exactly at or grazes the aimed surface.
+	const FHitResult& ResolvedHit = bShotBlocked ? ShotHit : AimHit;
+	OnShotResolved(BeamStart, BeamEnd, ResolvedHit);
 }
