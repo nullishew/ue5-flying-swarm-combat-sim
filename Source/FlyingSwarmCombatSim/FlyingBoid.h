@@ -18,6 +18,10 @@ public:
 
 	/** Advance one bounded simulation step. The boid never ticks itself. */
 	void StepTowards(const FVector& TargetLocation, float DeltaTime);
+	FVector CalculateArrivalAcceleration(const FVector& SnapshotPosition, const FVector& SnapshotVelocity,
+		const FVector& TargetLocation, float DeltaTime, float SpeedScale, float AccelerationScale,
+		float BrakingScale) const;
+	void ApplyAcceleration(const FVector& DesiredAcceleration, float DeltaTime, float SpeedScale);
 
 	FVector GetFlightVelocity() const { return Velocity; }
 
@@ -38,6 +42,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Boid|Movement", meta = (ClampMin = "0.0"))
 	float ArrivalRadiusCm = 20.0f;
+
+	/** Optional individual target. The runner's TargetActor is used when this is unset. */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Boid|Movement")
+	TObjectPtr<AActor> MovementTarget;
 
 private:
 	FVector Velocity = FVector::ZeroVector;
