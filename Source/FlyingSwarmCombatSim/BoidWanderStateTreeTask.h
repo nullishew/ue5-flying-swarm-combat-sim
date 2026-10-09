@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "StateTreeTaskBase.h"
+#include "BoidIntentTypes.h"
 #include "BoidWanderStateTreeTask.generated.h"
 
 class UBoidSteeringProfile;
@@ -18,7 +19,19 @@ struct FBoidWanderTaskInstanceData
 	TObjectPtr<UBoidSteeringProfile> PreviousProfile;
 
 	UPROPERTY(Transient)
+	TObjectPtr<UBoidSteeringProfile> AppliedProfile;
+
+	UPROPERTY(Transient)
 	bool bWasSteeringActive = false;
+
+	UPROPERTY(Transient)
+	FBoidMovementIntent PreviousIntent;
+
+	UPROPERTY(Transient)
+	uint64 IntentToken = 0;
+
+	UPROPERTY(Transient)
+	uint64 PreviousIntentOwner = 0;
 };
 
 /** StateTree selects a profile; the shared runner computes and applies its movement. */

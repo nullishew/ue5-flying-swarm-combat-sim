@@ -86,6 +86,7 @@ class FLYINGSWARMCOMBATSIM_API ASwarmSimulationRunner : public AActor
 public:
 	ASwarmSimulationRunner();
 	virtual void BeginPlay() override;
+	virtual void EndPlay(EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaTime) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Swarm")
@@ -125,7 +126,15 @@ private:
 		float ProgressWindowSeconds = 0.0f;
 		float ProgressDistanceCm = 0.0f;
 		FVector ProgressWindowStart = FVector::ZeroVector;
+		FVector ProgressDestination = FVector::ZeroVector;
+		bool bProgressHasDestination = false;
 		int32 RecoveryCount = 0;
+		uint32 IntentRevision = 0;
+		TWeakObjectPtr<AActor> ProgressTarget;
+		FVector RetreatGoal = FVector::ZeroVector;
+		TWeakObjectPtr<AActor> RetreatTarget;
+		bool bRetreating = false;
+		bool bProgressRetreating = false;
 	};
 	void ApplyQueuedRegistrations();
 	void AdvanceStep(float StepTime);
@@ -135,6 +144,7 @@ private:
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingAdditions;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingRemovals;
 	int32 NextAgentId = 1;
+	bool bEndingPlay = false;
 	UPROPERTY(Transient)
 	TObjectPtr<UBoidSteeringProfile> FallbackSteeringProfile;
 };

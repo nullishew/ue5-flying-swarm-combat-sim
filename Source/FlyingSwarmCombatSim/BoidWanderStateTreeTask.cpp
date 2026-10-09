@@ -8,13 +8,26 @@ EStateTreeRunStatus FBoidWanderStateTreeTask::EnterState(FStateTreeExecutionCont
 	const FStateTreeTransitionResult& Transition) const
 {
 	AFlyingBoid* Boid = Cast<AFlyingBoid>(Context.GetOwner());
-	if (!IsValid(Boid))
+	if (!IsValid(Boid) || !Boid->IsAlive())
 	{
 		return EStateTreeRunStatus::Failed;
 	}
 	FBoidWanderTaskInstanceData& InstanceData = Context.GetInstanceData(*this);
 	InstanceData.PreviousProfile = Boid->GetSteeringProfile();
 	InstanceData.bWasSteeringActive = Boid->IsSteeringActive();
+	InstanceData.PreviousIntent = Boid->GetMovementIntent();
+	InstanceData.PreviousIntentOwner = Boid->GetMovementIntentOwner();
+	InstanceData.IntentToken = Boid->AcquireIntentToken();
+	FBoidMovementIntent CruiseIntent = InstanceData.PreviousIntent;
+	CruiseIntent.Policy = EBoidMovementPolicy::Cruise;
+	CruiseIntent.bHasGoal = false;
+	CruiseIntent.Goal = FVector::ZeroVector;
+	if (CruiseIntent.Policy != InstanceData.PreviousIntent.Policy
+		|| InstanceData.PreviousIntent.bHasGoal
+		|| Boid->GetMovementIntentOwner() != InstanceData.IntentToken)
+	{
+		Boid->SetMovementIntent(CruiseIntent, InstanceData.IntentToken);
+	}
 	if (InstanceData.SteeringProfile)
 	{
 		Boid->SetSteeringProfile(InstanceData.SteeringProfile);
@@ -25,6 +38,7 @@ EStateTreeRunStatus FBoidWanderStateTreeTask::EnterState(FStateTreeExecutionCont
 		// runner's default Wander profile until the designer assigns a profile.
 		Boid->SetWanderActive(true);
 	}
+	InstanceData.AppliedProfile = Boid->GetSteeringProfile();
 	return EStateTreeRunStatus::Running;
 }
 
@@ -34,7 +48,16 @@ void FBoidWanderStateTreeTask::ExitState(FStateTreeExecutionContext& Context,
 	if (AFlyingBoid* Boid = Cast<AFlyingBoid>(Context.GetOwner()))
 	{
 		const FBoidWanderTaskInstanceData& InstanceData = Context.GetInstanceData(*this);
-		if (InstanceData.bWasSteeringActive)
+		if (!Boid->IsAlive())
+		{
+			return;
+		}
+		if (Boid->GetMovementIntentOwner() == InstanceData.IntentToken)
+		{
+			Boid->SetMovementIntent(InstanceData.PreviousIntent, InstanceData.PreviousIntentOwner);
+		}
+		if (Boid->IsSteeringActive() && Boid->GetSteeringProfile() == InstanceData.AppliedProfile
+			&& InstanceData.bWasSteeringActive)
 		{
 			if (InstanceData.PreviousProfile)
 			{
@@ -45,7 +68,7 @@ void FBoidWanderStateTreeTask::ExitState(FStateTreeExecutionContext& Context,
 				Boid->SetWanderActive(true);
 			}
 		}
-		else
+		else if (Boid->IsSteeringActive() && Boid->GetSteeringProfile() == InstanceData.AppliedProfile)
 		{
 			Boid->SetWanderActive(false);
 		}

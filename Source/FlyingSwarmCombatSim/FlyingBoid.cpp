@@ -2,13 +2,19 @@
 
 #include "BoidFlightAlgorithms.h"
 #include "BoidFlightMovementComponent.h"
+#include "FlyingCharacter.h"
 #include "BoidSteeringProfile.h"
 #include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/StateTreeComponent.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "Misc/Crc.h"
+#include "SwarmSimulationRunner.h"
+#include "Kismet/GameplayStatics.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/ConstructorHelpers.h"
 
 AFlyingBoid::AFlyingBoid()
@@ -40,9 +46,252 @@ AFlyingBoid::AFlyingBoid()
 	StateTree->SetStartLogicAutomatically(false);
 }
 
+void AFlyingBoid::BeginPlay()
+{
+	MaxHealth = FMath::IsFinite(MaxHealth) ? FMath::Max(1.0f, MaxHealth) : 1.0f;
+	CurrentHealth = MaxHealth;
+	bDead = false;
+	Super::BeginPlay();
+}
+
+void AFlyingBoid::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (ASwarmSimulationRunner* Runner = SimulationRunner.Get())
+	{
+		Runner->UnregisterBoid(this);
+		ClearSimulationRunner(Runner);
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
+float AFlyingBoid::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
+	AController* EventInstigator, AActor* DamageCauser)
+{
+	if (!IsAlive() || bIsProcessingDamage || !FMath::IsFinite(DamageAmount) || DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	TGuardValue<bool> DamageGuard(bIsProcessingDamage, true);
+	const float ProcessedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	if (!FMath::IsFinite(ProcessedDamage) || ProcessedDamage <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float PreviousHealth = CurrentHealth;
+	CurrentHealth = FMath::Clamp(PreviousHealth - ProcessedDamage, 0.0f, MaxHealth);
+	const float ActualDamage = PreviousHealth - CurrentHealth;
+	if (ActualDamage <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const bool bJustDied = PreviousHealth > 0.0f && CurrentHealth <= 0.0f;
+	if (bJustDied)
+	{
+		HandleDeath(); // Disable immediately, before any external notification.
+	}
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+	if (bJustDied)
+	{
+		OnDeath.Broadcast();
+	}
+	return ActualDamage;
+}
+
+void AFlyingBoid::HandleDeath()
+{
+	if (bDead)
+	{
+		return;
+	}
+	bDead = true;
+	SetWanderActive(false);
+	Velocity = FVector::ZeroVector;
+	MovementTarget = nullptr;
+	MovementTargetOwnerToken = 0;
+	SensedTarget.Reset();
+	TargetFacts = FBoidTargetFacts();
+	SecondsSinceLastSight = 0.0f;
+	FBoidMovementIntent EmptyIntent;
+	const bool bIntentChanged = MovementIntent.Policy != EmptyIntent.Policy
+		|| MovementIntent.bHasGoal != EmptyIntent.bHasGoal
+		|| MovementIntent.Goal != EmptyIntent.Goal
+		|| MovementIntent.ArrivalRadiusCm != EmptyIntent.ArrivalRadiusCm
+		|| MovementIntent.StandOffDistanceCm != EmptyIntent.StandOffDistanceCm
+		|| MovementIntent.MinimumTargetDistanceCm != EmptyIntent.MinimumTargetDistanceCm;
+	EmptyIntent.Revision = MovementIntent.Revision + (bIntentChanged ? 1u : 0u);
+	MovementIntent = EmptyIntent;
+	MovementIntentOwnerToken = 0;
+	if (CollisionSphere)
+	{
+		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+	SetActorEnableCollision(false);
+	if (ASwarmSimulationRunner* Runner = SimulationRunner.Get())
+	{
+		Runner->UnregisterBoid(this);
+	}
+}
+
+void AFlyingBoid::UpdateTargetSensing(float ElapsedSeconds)
+{
+	if (!IsAlive())
+	{
+		SensedTarget.Reset();
+		TargetFacts = FBoidTargetFacts();
+		SecondsSinceLastSight = 0.0f;
+		return;
+	}
+
+	const float Elapsed = FMath::IsFinite(ElapsedSeconds) ? FMath::Max(0.0f, ElapsedSeconds) : 0.0f;
+	APlayerController* PlayerController = UGameplayStatics::GetPlayerController(this, 0);
+	AFlyingCharacter* Player = PlayerController ? Cast<AFlyingCharacter>(PlayerController->GetPawn()) : nullptr;
+	if (!IsValid(Player) || !Player->IsAlive())
+	{
+		SensedTarget.Reset();
+		TargetFacts = FBoidTargetFacts();
+		SecondsSinceLastSight = 0.0f;
+		return;
+	}
+
+	if (SensedTarget.Get() != Player)
+	{
+		SensedTarget = Player;
+		TargetFacts = FBoidTargetFacts();
+		TargetFacts.TargetActor = Player;
+		SecondsSinceLastSight = 0.0f;
+	}
+
+	TargetFacts.TargetActor = Player;
+	const FVector BoidCenter = CollisionSphere ? CollisionSphere->GetComponentLocation() : GetActorLocation();
+	const UCapsuleComponent* PlayerCapsule = Player->GetCapsuleComponent();
+	const FVector PlayerCenter = PlayerCapsule ? PlayerCapsule->GetComponentLocation() : Player->GetActorLocation();
+	TargetFacts.DistanceCm = FVector::Distance(BoidCenter, PlayerCenter);
+
+	bool bHasSight = false;
+	if (UWorld* World = GetWorld())
+	{
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BoidTargetSight), true);
+		QueryParams.AddIgnoredActor(this);
+		QueryParams.AddIgnoredActor(Player);
+		FHitResult Hit;
+		bHasSight = !World->LineTraceSingleByChannel(Hit, BoidCenter, PlayerCenter, ECC_Visibility, QueryParams);
+	}
+	TargetFacts.bHasSight = bHasSight;
+
+	const float DetectionRadius = FMath::Max(0.0f, DetectionRadiusCm);
+	const float LoseRadius = FMath::Max(DetectionRadius, LoseRadiusCm);
+	if (bHasSight)
+	{
+		SecondsSinceLastSight = 0.0f;
+		TargetFacts.LastKnownPosition = PlayerCenter;
+		if (TargetFacts.DistanceCm <= DetectionRadius)
+		{
+			TargetFacts.bDetected = true;
+		}
+		else if (TargetFacts.DistanceCm > LoseRadius)
+		{
+			TargetFacts.bDetected = false;
+		}
+	}
+	else
+	{
+		SecondsSinceLastSight += Elapsed;
+		if (TargetFacts.DistanceCm > LoseRadius
+			|| SecondsSinceLastSight >= FMath::Max(0.0f, LostSightGraceSeconds))
+		{
+			TargetFacts.bDetected = false;
+		}
+	}
+}
+
+void AFlyingBoid::SetMovementIntent(const FBoidMovementIntent& Intent, uint64 OwnerToken)
+{
+	if (bDead)
+	{
+		return;
+	}
+
+	FBoidMovementIntent Sanitized = Intent;
+	if (!Sanitized.bHasGoal || Sanitized.Goal.ContainsNaN())
+	{
+		Sanitized.bHasGoal = false;
+		Sanitized.Goal = FVector::ZeroVector;
+	}
+	Sanitized.ArrivalRadiusCm = FMath::IsFinite(Sanitized.ArrivalRadiusCm)
+		? FMath::Max(0.0f, Sanitized.ArrivalRadiusCm) : 0.0f;
+	Sanitized.StandOffDistanceCm = FMath::IsFinite(Sanitized.StandOffDistanceCm)
+		? FMath::Max(0.0f, Sanitized.StandOffDistanceCm) : 0.0f;
+	Sanitized.MinimumTargetDistanceCm = FMath::IsFinite(Sanitized.MinimumTargetDistanceCm)
+		? FMath::Max(0.0f, Sanitized.MinimumTargetDistanceCm) : 0.0f;
+
+	const bool bEffectiveChange = MovementIntent.Policy != Sanitized.Policy
+		|| MovementIntent.bHasGoal != Sanitized.bHasGoal
+		|| MovementIntent.Goal != Sanitized.Goal
+		|| MovementIntent.ArrivalRadiusCm != Sanitized.ArrivalRadiusCm
+		|| MovementIntent.StandOffDistanceCm != Sanitized.StandOffDistanceCm
+		|| MovementIntent.MinimumTargetDistanceCm != Sanitized.MinimumTargetDistanceCm;
+	Sanitized.Revision = MovementIntent.Revision + (bEffectiveChange ? 1u : 0u);
+	MovementIntent = Sanitized;
+	MovementIntentOwnerToken = OwnerToken;
+}
+
+uint64 AFlyingBoid::AcquireIntentToken()
+{
+	if (bDead)
+	{
+		return 0;
+	}
+	++NextIntentToken;
+	if (NextIntentToken == 0)
+	{
+		++NextIntentToken;
+	}
+	return NextIntentToken;
+}
+
+void AFlyingBoid::SetMovementTarget(AActor* Target, uint64 OwnerToken)
+{
+	if (bDead)
+	{
+		return;
+	}
+	MovementTarget = Target;
+	MovementTargetOwnerToken = OwnerToken;
+}
+
+bool AFlyingBoid::AssociateSimulationRunner(ASwarmSimulationRunner* Runner)
+{
+	if (bDead || !IsValid(Runner))
+	{
+		return false;
+	}
+	if (ASwarmSimulationRunner* ExistingRunner = SimulationRunner.Get(); ExistingRunner && ExistingRunner != Runner)
+	{
+		return false;
+	}
+	SimulationRunner = Runner;
+	return true;
+}
+
+ASwarmSimulationRunner* AFlyingBoid::GetSimulationRunner() const
+{
+	return SimulationRunner.Get();
+}
+
+void AFlyingBoid::ClearSimulationRunner(ASwarmSimulationRunner* Runner)
+{
+	if (SimulationRunner.Get() == Runner)
+	{
+		SimulationRunner.Reset();
+	}
+}
+
 void AFlyingBoid::StepTowards(const FVector& TargetLocation, float DeltaTime)
 {
-	if (DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
+	if (bDead || DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
 	{
 		return;
 	}
@@ -79,7 +328,7 @@ FVector AFlyingBoid::CalculateArrivalAcceleration(const FVector& SnapshotPositio
 
 void AFlyingBoid::ApplyAcceleration(const FVector& DesiredAcceleration, float DeltaTime, float SpeedScale)
 {
-	if (DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
+	if (bDead || DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
 	{
 		return;
 	}
@@ -94,6 +343,10 @@ void AFlyingBoid::ApplyAcceleration(const FVector& DesiredAcceleration, float De
 	const FVector Start = GetActorLocation();
 	FHitResult Hit;
 	SetActorLocation(Start + Velocity * DeltaTime, true, &Hit);
+	if (bDead)
+	{
+		return;
+	}
 	if (Hit.bBlockingHit)
 	{
 		// Do not retain velocity into a wall after the swept move stops there.
@@ -107,6 +360,10 @@ void AFlyingBoid::ApplyAcceleration(const FVector& DesiredAcceleration, float De
 
 void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 {
+	if (bDead)
+	{
+		return;
+	}
 	// Reapply invariants after Blueprint defaults have been loaded.
 	CollisionSphere->SetSimulatePhysics(false);
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -131,18 +388,38 @@ void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 	ActiveSteeringProfile = nullptr;
 	RuntimeProfile = nullptr;
 	SteeringRuntimeStates.Reset();
+	MovementIntent = FBoidMovementIntent();
+	MovementIntentOwnerToken = 0;
+	MovementTargetOwnerToken = 0;
 }
 
 void AFlyingBoid::SetSteeringProfile(UBoidSteeringProfile* Profile)
 {
+	if (bDead)
+	{
+		return;
+	}
 	ActiveSteeringProfile = Profile;
 	bSteeringActive = true;
 	PrepareSteeringRuntime(Profile);
 }
 
+void AFlyingBoid::SetWanderActive(bool bActive)
+{
+	if (bDead)
+	{
+		bActive = false;
+	}
+	bSteeringActive = bActive;
+	if (!bActive)
+	{
+		ActiveSteeringProfile = nullptr;
+	}
+}
+
 void AFlyingBoid::PrepareSteeringRuntime(UBoidSteeringProfile* Profile)
 {
-	if (!Profile || RuntimeProfile == Profile)
+	if (bDead || !Profile || RuntimeProfile == Profile)
 	{
 		return;
 	}
@@ -201,7 +478,7 @@ namespace
 void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, float DeltaTime,
 	float CruiseSpeed, const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed)
 {
-	if (DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
+	if (bDead || DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
 	{
 		return;
 	}
@@ -217,9 +494,17 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	const FVector Delta = BoidFlight::ClampPosition(Start + Velocity * DeltaTime, Transform, Extent) - Start;
 	FHitResult Hit;
 	FlightMovement->SafeMoveUpdatedComponent(Delta, GetActorQuat(), true, Hit);
+	if (bDead)
+	{
+		return;
+	}
 	if (Hit.bBlockingHit)
 	{
 		FlightMovement->SlideAlongSurface(Delta, 1.0f - Hit.Time, Hit.Normal, Hit);
+	}
+	if (bDead)
+	{
+		return;
 	}
 	// Depenetration can reposition the sphere; it must not create unbounded velocity.
 	Velocity = ((GetActorLocation() - Start) / DeltaTime).GetClampedToMaxSize(FMath::Max(0.0f, CruiseSpeed));
@@ -245,6 +530,10 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 
 bool AFlyingBoid::ConstrainWanderToBounds(const UBoxComponent* Bounds, float BoundsMarginCm)
 {
+	if (bDead)
+	{
+		return false;
+	}
 	FTransform Transform;
 	FVector Extent;
 	const float Radius = CollisionSphere->GetScaledSphereRadius();
@@ -275,6 +564,10 @@ bool AFlyingBoid::ConstrainWanderToBounds(const UBoxComponent* Bounds, float Bou
 
 bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed)
 {
+	if (bDead)
+	{
+		return false;
+	}
 	FTransform Transform;
 	FVector Extent;
 	const float Radius = CollisionSphere->GetScaledSphereRadius();

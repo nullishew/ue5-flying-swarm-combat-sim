@@ -15,6 +15,8 @@ struct FBoidSteeringInput
 	FVector Heading = FVector::ForwardVector;
 	FVector TargetPosition = FVector::ZeroVector;
 	bool bHasTarget = false;
+	FVector Goal = FVector::ZeroVector;
+	bool bHasGoal = false;
 	float DeltaTime = 0.0f;
 	int32 AgentId = INDEX_NONE;
 };
