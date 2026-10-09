@@ -2,12 +2,15 @@
 
 #include "FlyingCharacter.h"
 
+#include "FlyingBoid.h"
 #include "Camera/CameraComponent.h"
 #include "CollisionQueryParams.h"
 #include "Components/SceneComponent.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "Kismet/GameplayStatics.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "Math/RotationMatrix.h"
@@ -46,6 +49,9 @@ AFlyingCharacter::AFlyingCharacter()
 
 void AFlyingCharacter::BeginPlay()
 {
+	MaxHealth = FMath::IsFinite(MaxHealth) ? FMath::Max(1.0f, MaxHealth) : 100.0f;
+	CurrentHealth = MaxHealth;
+	bDead = false;
 	Super::BeginPlay();
 
 	bUseControllerRotationYaw = true;
@@ -58,6 +64,50 @@ void AFlyingCharacter::BeginPlay()
 	Movement->BrakingDecelerationFlying = FlightBraking;
 	Movement->SetMovementMode(MOVE_Flying);
 	ShipVisualRoot->SetRelativeRotation(ShipVisualRotationOffset);
+}
+
+float AFlyingCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
+	AController* EventInstigator, AActor* DamageCauser)
+{
+	if (!IsAlive() || bIsProcessingDamage || !FMath::IsFinite(DamageAmount) || DamageAmount <= 0.0f)
+	{
+		return 0.0f;
+	}
+	TGuardValue<bool> DamageGuard(bIsProcessingDamage, true);
+
+	const float ProcessedDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	if (!FMath::IsFinite(ProcessedDamage) || ProcessedDamage <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const float OldHealth = CurrentHealth;
+	CurrentHealth = FMath::Clamp(OldHealth - ProcessedDamage, 0.0f, MaxHealth);
+	const float ActualHealthLoss = OldHealth - CurrentHealth;
+	if (ActualHealthLoss <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const bool bJustDied = OldHealth > 0.0f && CurrentHealth <= 0.0f;
+	if (bJustDied)
+	{
+		// Set the guard before callbacks so reentrant damage cannot announce death twice.
+		bDead = true;
+		if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+			Movement->DisableMovement();
+		}
+		DisableInput(Cast<APlayerController>(GetController()));
+	}
+
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+	if (bJustDied)
+	{
+		OnDeath.Broadcast();
+	}
+	return ActualHealthLoss;
 }
 
 void AFlyingCharacter::Tick(float DeltaTime)
@@ -143,7 +193,7 @@ void AFlyingCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 void AFlyingCharacter::Move(const FInputActionValue& Value)
 {
 	const FVector2D MoveInput = Value.Get<FVector2D>();
-	if (Controller == nullptr)
+	if (!IsAlive() || Controller == nullptr)
 	{
 		return;
 	}
@@ -159,6 +209,11 @@ void AFlyingCharacter::Move(const FInputActionValue& Value)
 
 void AFlyingCharacter::Look(const FInputActionValue& Value)
 {
+	if (!IsAlive())
+	{
+		return;
+	}
+
 	const FVector2D LookInput = Value.Get<FVector2D>();
 	AddControllerYawInput(LookInput.X);
 	AddControllerPitchInput(LookInput.Y);
@@ -167,13 +222,10 @@ void AFlyingCharacter::Look(const FInputActionValue& Value)
 
 void AFlyingCharacter::Fire()
 {
-	UE_LOG(LogTemp, Warning, TEXT("AFlyingCharacter::Fire() called"));
-	if (!IsValid(FireOrigin) || !IsValid(Camera) || !GetWorld())
+	if (!IsAlive() || !IsValid(FireOrigin) || !IsValid(Camera) || !GetWorld())
 	{
 		return;
 	}
-	UE_LOG(LogTemp, Warning, TEXT("AFlyingCharacter::Fire() worked"));
-
 
 	const FVector CameraLocation = Camera->GetComponentLocation();
 	const FVector CameraEnd = CameraLocation + Camera->GetForwardVector() * AimTraceDistance;
@@ -200,5 +252,35 @@ void AFlyingCharacter::Fire()
 	// Prefer the muzzle trace for nearby obstruction, but preserve the camera hit
 	// when the muzzle trace ends exactly at or grazes the aimed surface.
 	const FHitResult& ResolvedHit = bShotBlocked ? ShotHit : AimHit;
+
+	// Damage uses the first blocking muzzle-path hit. Extend slightly beyond the
+	// camera's aim point so the intended surface can register at the trace endpoint.
+	const FVector MuzzleDirection = (AimPoint - BeamStart).GetSafeNormal();
+	if (!MuzzleDirection.IsNearlyZero() && FMath::IsFinite(DamagePerShot) && DamagePerShot > 0.0f)
+	{
+		FHitResult DamageHit;
+		const FVector DamageTraceEnd = AimPoint + MuzzleDirection * 10.0f;
+		if (GetWorld()->LineTraceSingleByChannel(
+			DamageHit,
+			BeamStart,
+			DamageTraceEnd,
+			ECC_Visibility,
+			QueryParams))
+		{
+			AFlyingBoid* HitBoid = Cast<AFlyingBoid>(DamageHit.GetActor());
+			if (IsValid(HitBoid) && HitBoid->IsAlive())
+			{
+				UGameplayStatics::ApplyPointDamage(
+					HitBoid,
+					DamagePerShot,
+					MuzzleDirection,
+					DamageHit,
+					GetController(),
+					this,
+					nullptr);
+			}
+		}
+	}
+
 	OnShotResolved(BeamStart, BeamEnd, ResolvedHit);
 }

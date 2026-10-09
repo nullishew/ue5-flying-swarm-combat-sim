@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "BoidHealthTypes.h"
 #include "FlyingCharacter.generated.h"
 
 class UInputAction;
@@ -70,6 +71,27 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapons", meta = (ClampMin = "1.0"))
 	float AimTraceDistance = 100000.0f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "1.0"))
+	float MaxHealth = 100.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Health")
+	float CurrentHealth = 100.0f;
+
+	UPROPERTY(Transient, VisibleInstanceOnly, BlueprintReadOnly, Category = "Health")
+	bool bDead = false;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapons", meta = (ClampMin = "0.0"))
+	float DamagePerShot = 10.0f;
+
+	UPROPERTY(BlueprintAssignable, Category = "Health")
+	FBoidHealthChangedDelegate OnHealthChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Health")
+	FBoidDeathDelegate OnDeath;
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	bool IsAlive() const { return !bDead && CurrentHealth > 0.0f; }
+
 	/** Called for every shot. Blueprints can render a transient beam and a marker when HitResult blocks. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Weapons")
 	void OnShotResolved(const FVector& BeamStart, const FVector& BeamEnd, const FHitResult& HitResult);
@@ -77,12 +99,15 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
+	virtual float TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
+		AController* EventInstigator, AActor* DamageCauser) override;
 
 	void UpdateShipVisualRotation(float DeltaTime);
 	FRotator PreviousControlRotation = FRotator::ZeroRotator;
 	FRotator TargetShipVisualTilt = FRotator::ZeroRotator;
 	float TimeSinceViewRotationChanged = 0.0f;
 	bool bControlRotationInitialized = false;
+	bool bIsProcessingDamage = false;
 
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
