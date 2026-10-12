@@ -5,6 +5,7 @@
 #include "BoidHealthTypes.h"
 #include "BoidIntentTypes.h"
 #include "BoidSteeringBehavior.h"
+#include "Engine/TimerHandle.h"
 #include "FlyingBoid.generated.h"
 
 class AFlyingCharacter;
@@ -173,5 +174,7 @@ private:
 	float SecondsSinceLastSight = 0.0f;
 	bool bIsProcessingDamage = false;
 
+	FTimerHandle DeathVisualTimer;
+	void HideDeadVisuals();
 	void HandleDeath();
 };

@@ -2,6 +2,7 @@
 
 
 #include "FlyingSwarmCombatSimPlayerController.h"
+#include "FlyingCharacter.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
@@ -19,6 +20,7 @@ AFlyingSwarmCombatSimPlayerController::AFlyingSwarmCombatSimPlayerController()
 void AFlyingSwarmCombatSimPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	RefreshCombatHUD();
 
 	
 	// only spawn touch controls on local player controllers
@@ -39,6 +41,44 @@ void AFlyingSwarmCombatSimPlayerController::BeginPlay()
 		}
 
 	}
+}
+
+void AFlyingSwarmCombatSimPlayerController::SetPawn(APawn* InPawn)
+{
+	APawn* PreviousPawn = GetPawn();
+	Super::SetPawn(InPawn);
+	if (PreviousPawn != GetPawn() && HasActorBegunPlay())
+	{
+		RefreshCombatHUD();
+	}
+}
+
+void AFlyingSwarmCombatSimPlayerController::RefreshCombatHUD()
+{
+	if (CombatHUDWidget)
+	{
+		// The widget's Destruct event unbinds its stored old pawn, not GetPawn().
+		CombatHUDWidget->RemoveFromParent();
+		CombatHUDWidget = nullptr;
+	}
+	if (IsLocalPlayerController() && IsValid(Cast<AFlyingCharacter>(GetPawn())) && CombatHUDWidgetClass)
+	{
+		CombatHUDWidget = CreateWidget<UUserWidget>(this, CombatHUDWidgetClass);
+		if (CombatHUDWidget)
+		{
+			CombatHUDWidget->AddToPlayerScreen(10);
+		}
+	}
+}
+
+void AFlyingSwarmCombatSimPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (CombatHUDWidget)
+	{
+		CombatHUDWidget->RemoveFromParent();
+		CombatHUDWidget = nullptr;
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void AFlyingSwarmCombatSimPlayerController::SetupInputComponent()

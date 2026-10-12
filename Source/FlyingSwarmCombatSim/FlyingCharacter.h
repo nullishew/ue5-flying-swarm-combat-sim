@@ -5,11 +5,34 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "BoidHealthTypes.h"
+#include "Engine/HitResult.h"
 #include "FlyingCharacter.generated.h"
 
 class UInputAction;
 class USceneComponent;
 struct FInputActionValue;
+
+/** Read-only shot geometry shared by the HUD and firing. */
+USTRUCT(BlueprintType)
+struct FLYINGSWARMCOMBATSIM_API FFlyingShotPreview
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Weapons")
+	bool bValid = false;
+	UPROPERTY(BlueprintReadOnly, Category = "Weapons")
+	FVector BeamStart = FVector::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Weapons")
+	FVector BeamEnd = FVector::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "Weapons")
+	FHitResult HitResult;
+	UPROPERTY(BlueprintReadOnly, Category = "Weapons")
+	bool bMuzzleObstructed = false;
+};
+
+UDELEGATE()
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FFlyingShotDamageConfirmedDelegate,
+	float, ActualDamage, bool, bKilled, FVector, ImpactPoint);
 
 UCLASS()
 class FLYINGSWARMCOMBATSIM_API AFlyingCharacter : public ACharacter
@@ -91,6 +114,14 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Health")
 	bool IsAlive() const { return !bDead && CurrentHealth > 0.0f; }
+
+	/** Traces only: no damage or presentation callbacks. Explicit exec pin avoids repeated pure evaluation. */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "Weapons")
+	FFlyingShotPreview GetShotPreview() const;
+
+	/** Successful health loss only; ImpactPoint is from the fired shot, not a later HUD preview. */
+	UPROPERTY(BlueprintAssignable, Category = "Weapons")
+	FFlyingShotDamageConfirmedDelegate OnShotDamageConfirmed;
 
 	/** Called for every shot. Blueprints can render a transient beam and a marker when HitResult blocks. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Weapons")
