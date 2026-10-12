@@ -220,67 +220,74 @@ void AFlyingCharacter::Look(const FInputActionValue& Value)
 
 }
 
-void AFlyingCharacter::Fire()
+FFlyingShotPreview AFlyingCharacter::GetShotPreview() const
 {
-	if (!IsAlive() || !IsValid(FireOrigin) || !IsValid(Camera) || !GetWorld())
+	FFlyingShotPreview Preview;
+	if (!IsAlive() || !IsValid(FireOrigin) || !IsValid(Camera) || !GetWorld()
+		|| !FMath::IsFinite(AimTraceDistance) || AimTraceDistance <= 0.0f)
 	{
-		return;
+		return Preview;
 	}
 
 	const FVector CameraLocation = Camera->GetComponentLocation();
 	const FVector CameraEnd = CameraLocation + Camera->GetForwardVector() * AimTraceDistance;
 	FHitResult AimHit;
-	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PlayerFireAim), true, this);
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PlayerShotPreview), true, this);
 	const bool bHasAimHit = GetWorld()->LineTraceSingleByChannel(
-		AimHit,
-		CameraLocation,
-		CameraEnd,
-		ECC_Visibility,
-		QueryParams);
+		AimHit, CameraLocation, CameraEnd, ECC_Visibility, QueryParams);
 	const FVector AimPoint = bHasAimHit ? AimHit.ImpactPoint : CameraEnd;
 
-	const FVector BeamStart = FireOrigin->GetComponentLocation();
-	FHitResult ShotHit;
-	const bool bShotBlocked = GetWorld()->LineTraceSingleByChannel(
-		ShotHit,
-		BeamStart,
-		AimPoint,
-		ECC_Visibility,
-		QueryParams);
-	const FVector BeamEnd = bShotBlocked ? ShotHit.ImpactPoint : AimPoint;
-
-	// Prefer the muzzle trace for nearby obstruction, but preserve the camera hit
-	// when the muzzle trace ends exactly at or grazes the aimed surface.
-	const FHitResult& ResolvedHit = bShotBlocked ? ShotHit : AimHit;
-
-	// Damage uses the first blocking muzzle-path hit. Extend slightly beyond the
-	// camera's aim point so the intended surface can register at the trace endpoint.
-	const FVector MuzzleDirection = (AimPoint - BeamStart).GetSafeNormal();
-	if (!MuzzleDirection.IsNearlyZero() && FMath::IsFinite(DamagePerShot) && DamagePerShot > 0.0f)
+	Preview.BeamStart = FireOrigin->GetComponentLocation();
+	const FVector MuzzleDirection = (AimPoint - Preview.BeamStart).GetSafeNormal();
+	if (MuzzleDirection.IsNearlyZero())
 	{
-		FHitResult DamageHit;
-		const FVector DamageTraceEnd = AimPoint + MuzzleDirection * 10.0f;
-		if (GetWorld()->LineTraceSingleByChannel(
-			DamageHit,
-			BeamStart,
-			DamageTraceEnd,
-			ECC_Visibility,
-			QueryParams))
+		return Preview;
+	}
+
+	// A tiny extension registers an aimed surface at the trace endpoint. The same
+	// first blocking hit drives preview, presentation and damage; no camera-hit fallback.
+	const FVector MuzzleEnd = AimPoint + MuzzleDirection * 10.0f;
+	const bool bShotBlocked = GetWorld()->LineTraceSingleByChannel(
+		Preview.HitResult, Preview.BeamStart, MuzzleEnd, ECC_Visibility, QueryParams);
+	Preview.BeamEnd = bShotBlocked ? Preview.HitResult.ImpactPoint : AimPoint;
+	// Endpoint extension and surface precision are not muzzle obstructions.
+	Preview.bMuzzleObstructed = bShotBlocked
+		&& FVector::Dist(Preview.BeamStart, Preview.BeamEnd) + 1.0f
+			< FVector::Dist(Preview.BeamStart, AimPoint);
+	Preview.bValid = true;
+	return Preview;
+}
+
+void AFlyingCharacter::Fire()
+{
+	const FFlyingShotPreview Shot = GetShotPreview();
+	if (!Shot.bValid)
+	{
+		return;
+	}
+
+	float ActualDamage = 0.0f;
+	bool bKilled = false;
+	if (Shot.HitResult.bBlockingHit && FMath::IsFinite(DamagePerShot) && DamagePerShot > 0.0f)
+	{
+		AFlyingBoid* HitBoid = Cast<AFlyingBoid>(Shot.HitResult.GetActor());
+		if (IsValid(HitBoid) && HitBoid->IsAlive())
 		{
-			AFlyingBoid* HitBoid = Cast<AFlyingBoid>(DamageHit.GetActor());
-			if (IsValid(HitBoid) && HitBoid->IsAlive())
-			{
-				UGameplayStatics::ApplyPointDamage(
-					HitBoid,
-					DamagePerShot,
-					MuzzleDirection,
-					DamageHit,
-					GetController(),
-					this,
-					nullptr);
-			}
+			const float HealthBeforeShot = HitBoid->CurrentHealth;
+			const TWeakObjectPtr<AFlyingBoid> DamagedBoid(HitBoid);
+			ActualDamage = UGameplayStatics::ApplyPointDamage(
+				HitBoid, DamagePerShot, (Shot.HitResult.TraceEnd - Shot.BeamStart).GetSafeNormal(),
+				Shot.HitResult, GetController(), this, nullptr);
+			// Damage delegates may destroy the target. Never dereference a raw target
+			// after ApplyPointDamage; capture the result before player effects run.
+			bKilled = ActualDamage > 0.0f && (ActualDamage >= HealthBeforeShot
+				|| (DamagedBoid.IsValid() && !DamagedBoid->IsAlive()));
 		}
 	}
 
-	OnShotResolved(BeamStart, BeamEnd, ResolvedHit);
+	OnShotResolved(Shot.BeamStart, Shot.BeamEnd, Shot.HitResult);
+	if (IsValid(this) && FMath::IsFinite(ActualDamage) && ActualDamage > 0.0f)
+	{
+		OnShotDamageConfirmed.Broadcast(ActualDamage, bKilled, Shot.BeamEnd);
+	}
 }

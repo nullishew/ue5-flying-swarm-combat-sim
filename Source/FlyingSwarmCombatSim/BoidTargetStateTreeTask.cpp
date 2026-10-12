@@ -6,6 +6,9 @@
 #include "FlyingBoid.h"
 #include "StateTreeExecutionContext.h"
 
+// File-specific scope also isolates helpers in Unreal unity translation units.
+namespace BoidTargetTaskPrivate
+{
 namespace
 {
 	bool IsUsableTarget(AActor* Target, const AFlyingBoid* Boid)
@@ -42,6 +45,7 @@ namespace
 		return false;
 	}
 }
+}
 
 EStateTreeRunStatus FBoidTargetStateTreeTask::EnterState(FStateTreeExecutionContext& Context,
 	const FStateTreeTransitionResult& Transition) const
@@ -58,7 +62,8 @@ EStateTreeRunStatus FBoidTargetStateTreeTask::EnterState(FStateTreeExecutionCont
 	InstanceData.bLostOwnership = false;
 	InstanceData.bUsesBoundTarget = IsValid(InstanceData.TargetActor);
 	AActor* Target = InstanceData.bUsesBoundTarget ? InstanceData.TargetActor.Get() : Boid->MovementTarget.Get();
-	if (!IsUsableTarget(Target, Boid) || !HasSeekBehavior(InstanceData.SteeringProfile))
+	if (!BoidTargetTaskPrivate::IsUsableTarget(Target, Boid)
+		|| !BoidTargetTaskPrivate::HasSeekBehavior(InstanceData.SteeringProfile))
 	{
 		return EStateTreeRunStatus::Failed;
 	}
@@ -107,7 +112,7 @@ EStateTreeRunStatus FBoidTargetStateTreeTask::Tick(FStateTreeExecutionContext& C
 	}
 
 	AActor* Target = InstanceData.bUsesBoundTarget ? InstanceData.TargetActor.Get() : Boid->MovementTarget.Get();
-	if (!IsUsableTarget(Target, Boid))
+	if (!BoidTargetTaskPrivate::IsUsableTarget(Target, Boid))
 	{
 		if (Boid->GetSteeringProfile() == InstanceData.AppliedProfile)
 		{

@@ -6,6 +6,9 @@
 #include "FlyingBoid.h"
 #include "StateTreeExecutionContext.h"
 
+// File-specific scope also isolates helpers in Unreal unity translation units.
+namespace BoidFollowTaskPrivate
+{
 namespace
 {
 	bool HasSeekBehavior(const UBoidSteeringProfile* Profile)
@@ -52,6 +55,7 @@ namespace
 			&& FMath::IsNearlyEqual(Intent.ArrivalRadiusCm, ArrivalRadiusCm);
 	}
 }
+}
 
 EStateTreeRunStatus FBoidFollowStateTreeTask::EnterState(FStateTreeExecutionContext& Context,
 	const FStateTreeTransitionResult& Transition) const
@@ -68,7 +72,8 @@ EStateTreeRunStatus FBoidFollowStateTreeTask::EnterState(FStateTreeExecutionCont
 	InstanceData.bLostOwnership = false;
 	const FBoidTargetFacts& Facts = Boid->GetTargetFacts();
 	AActor* Target = Facts.TargetActor;
-	if (!Facts.bDetected || !IsUsableTarget(Target, Boid) || !HasSeekBehavior(InstanceData.SteeringProfile))
+	if (!Facts.bDetected || !BoidFollowTaskPrivate::IsUsableTarget(Target, Boid)
+		|| !BoidFollowTaskPrivate::HasSeekBehavior(InstanceData.SteeringProfile))
 	{
 		return EStateTreeRunStatus::Failed;
 	}
@@ -90,7 +95,7 @@ EStateTreeRunStatus FBoidFollowStateTreeTask::EnterState(FStateTreeExecutionCont
 	FollowIntent.StandOffDistanceCm = FMath::Max(0.0f, InstanceData.StandOffDistanceCm);
 	FollowIntent.MinimumTargetDistanceCm = FMath::Max(0.0f, InstanceData.MinimumTargetDistanceCm);
 	FollowIntent.ArrivalRadiusCm = FMath::Max(0.0f, InstanceData.ArrivalRadiusCm);
-	if (!HasFollowIntent(InstanceData.PreviousIntent, InstanceData.StandOffDistanceCm,
+	if (!BoidFollowTaskPrivate::HasFollowIntent(InstanceData.PreviousIntent, InstanceData.StandOffDistanceCm,
 		InstanceData.MinimumTargetDistanceCm, InstanceData.ArrivalRadiusCm)
 		|| Boid->GetMovementIntentOwner() != InstanceData.IntentToken)
 	{
@@ -122,7 +127,7 @@ EStateTreeRunStatus FBoidFollowStateTreeTask::Tick(FStateTreeExecutionContext& C
 
 	const FBoidTargetFacts& Facts = Boid->GetTargetFacts();
 	AActor* Target = Facts.TargetActor;
-	if (!Facts.bDetected || !IsUsableTarget(Target, Boid))
+	if (!Facts.bDetected || !BoidFollowTaskPrivate::IsUsableTarget(Target, Boid))
 	{
 		if (Boid->GetMovementTargetOwner() == InstanceData.IntentToken)
 		{
@@ -137,7 +142,7 @@ EStateTreeRunStatus FBoidFollowStateTreeTask::Tick(FStateTreeExecutionContext& C
 	}
 
 	const FBoidMovementIntent CurrentIntent = Boid->GetMovementIntent();
-	if (!HasFollowIntent(CurrentIntent, InstanceData.StandOffDistanceCm,
+	if (!BoidFollowTaskPrivate::HasFollowIntent(CurrentIntent, InstanceData.StandOffDistanceCm,
 			InstanceData.MinimumTargetDistanceCm, InstanceData.ArrivalRadiusCm))
 	{
 		FBoidMovementIntent FollowIntent = CurrentIntent;

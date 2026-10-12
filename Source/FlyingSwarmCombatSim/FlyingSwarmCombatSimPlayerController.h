@@ -21,10 +21,25 @@ class FLYINGSWARMCOMBATSIM_API AFlyingSwarmCombatSimPlayerController : public AP
 	
 public:
 
+	/** Recreate the optional combat widget after a runtime widget-class change. */
+	UFUNCTION(BlueprintCallable, Category = "UI|Combat")
+	void RefreshCombatHUD();
+
+	virtual void SetPawn(APawn* InPawn) override;
+
 	/** Constructor */
 	AFlyingSwarmCombatSimPlayerController();
 
 protected:
+
+	/** Assign WBP_FlyingCombatHUD; only shown for a possessed FlyingCharacter. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Combat")
+	TSubclassOf<UUserWidget> CombatHUDWidgetClass;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "UI|Combat")
+	TObjectPtr<UUserWidget> CombatHUDWidget;
+
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Input Mapping Contexts */
 	UPROPERTY(EditAnywhere, Category="Input|Input Mappings")

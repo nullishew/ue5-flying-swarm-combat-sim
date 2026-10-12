@@ -16,6 +16,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/ConstructorHelpers.h"
+#include "TimerManager.h"
 
 AFlyingBoid::AFlyingBoid()
 {
@@ -56,6 +57,7 @@ void AFlyingBoid::BeginPlay()
 
 void AFlyingBoid::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	GetWorldTimerManager().ClearTimer(DeathVisualTimer);
 	if (ASwarmSimulationRunner* Runner = SimulationRunner.Get())
 	{
 		Runner->UnregisterBoid(this);
@@ -96,6 +98,13 @@ float AFlyingBoid::TakeDamage(float DamageAmount, FDamageEvent const& DamageEven
 	if (bJustDied)
 	{
 		OnDeath.Broadcast();
+		// Presentation cannot keep a dead drone visible indefinitely. Schedule after
+		// callbacks so Blueprint death effects can spawn independently at this position.
+		if (IsValid(this))
+		{
+			GetWorldTimerManager().SetTimer(DeathVisualTimer, this, &AFlyingBoid::HideDeadVisuals, 0.08f, false);
+			SetLifeSpan(0.5f);
+		}
 	}
 	return ActualDamage;
 }
@@ -129,9 +138,22 @@ void AFlyingBoid::HandleDeath()
 		CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	}
 	SetActorEnableCollision(false);
+	if (IsValid(StateTree))
+	{
+		StateTree->StopLogic(TEXT("Boid died"));
+	}
 	if (ASwarmSimulationRunner* Runner = SimulationRunner.Get())
 	{
 		Runner->UnregisterBoid(this);
+	}
+}
+
+void AFlyingBoid::HideDeadVisuals()
+{
+	if (bDead)
+	{
+		// Includes Blueprint-added visuals, rather than only the native mesh.
+		SetActorHiddenInGame(true);
 	}
 }
 
