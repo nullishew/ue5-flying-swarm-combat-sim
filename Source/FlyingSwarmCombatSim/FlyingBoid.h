@@ -4,6 +4,9 @@
 #include "GameFramework/Actor.h"
 #include "BoidHealthTypes.h"
 #include "BoidIntentTypes.h"
+#include "BoidRangedPositioning.h"
+#include "BoidNavigationTypes.h"
+#include "BoidCombatMovementTypes.h"
 #include "BoidSteeringBehavior.h"
 #include "Engine/TimerHandle.h"
 #include "FlyingBoid.generated.h"
@@ -83,6 +86,22 @@ public:
 	void UpdateTargetSensing(float ElapsedSeconds);
 	UFUNCTION(BlueprintPure, Category = "Boid|Targeting")
 	FBoidTargetFacts GetTargetFacts() const { return TargetFacts; }
+	UFUNCTION(BlueprintPure, Category = "Boid|Positioning")
+	FBoidPositioningFacts GetPositioningFacts() const { return PositioningFacts; }
+	bool RequestRangedPhase(EBoidRangedPhaseRequest Phase, uint64 OwnerToken, uint64 CombatToken);
+	void ReleaseRangedPhase(uint64 OwnerToken);
+	EBoidRangedPhaseRequest GetRequestedRangedPhase() const { return RequestedRangedPhase; }
+	uint64 GetRangedPhaseOwner() const { return RangedPhaseOwner; }
+	void PublishPositioning(const FBoidPositioningFacts& Facts, bool bReady);
+	void PublishCombatMovement(const FBoidCombatMovementFacts& Facts) { CombatMovementFacts = IsAlive() ? Facts : FBoidCombatMovementFacts(); }
+	UFUNCTION(BlueprintPure, Category="Boid|Combat Movement") FBoidCombatMovementFacts GetCombatMovementFacts() const { return CombatMovementFacts; }
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category="Boid|Combat Movement") FBoidCombatMovementFacts CombatMovementFacts;
+	void PublishMovementConstraint(EBoidCombatMovementConstraint Constraint, float Speed, const FString& Reason);
+	FString GetStateTreeAssetPath() const;
+	int32 GetSimulationSeed() const { return SimulationSeed; }
+	void PublishNavigation(const FBoidNavigationFacts& Facts) { NavigationFacts = IsAlive() ? Facts : FBoidNavigationFacts(); }
+	UFUNCTION(BlueprintPure, Category="Boid|Navigation") FBoidNavigationFacts GetNavigationFacts() const { return NavigationFacts; }
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Boid|Navigation") FBoidNavigationFacts NavigationFacts;
 	UFUNCTION(BlueprintPure, Category = "Boid|Health")
 	bool IsAlive() const { return !bDead && CurrentHealth > 0.0f; }
 	void SetMovementIntent(const FBoidMovementIntent& Intent, uint64 OwnerToken = 0);
@@ -149,6 +168,8 @@ public:
 	FBoidDeathDelegate OnDeath;
 
 private:
+	EBoidRangedPhaseRequest RequestedRangedPhase = EBoidRangedPhaseRequest::Approach;
+	uint64 RangedPhaseOwner = 0;
 	FVector Velocity = FVector::ZeroVector;
 	FVector FlightHeading = FVector::ForwardVector;
 	FVector HeldAvoidanceDirection = FVector::ZeroVector;
@@ -168,6 +189,7 @@ private:
 	TWeakObjectPtr<AFlyingCharacter> SensedTarget;
 	TWeakObjectPtr<ASwarmSimulationRunner> SimulationRunner;
 	FBoidMovementIntent MovementIntent;
+	FBoidPositioningFacts PositioningFacts;
 	uint64 MovementIntentOwnerToken = 0;
 	uint64 MovementTargetOwnerToken = 0;
 	uint64 NextIntentToken = 0;

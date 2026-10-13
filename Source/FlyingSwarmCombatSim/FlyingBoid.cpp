@@ -1,4 +1,7 @@
 #include "FlyingBoid.h"
+#include "StateTreeReference.h"
+#include "StateTree.h"
+#include "UObject/UnrealType.h"
 
 #include "BoidFlightAlgorithms.h"
 #include "BoidFlightMovementComponent.h"
@@ -122,6 +125,11 @@ void AFlyingBoid::HandleDeath()
 	MovementTargetOwnerToken = 0;
 	SensedTarget.Reset();
 	TargetFacts = FBoidTargetFacts();
+	RequestedRangedPhase = EBoidRangedPhaseRequest::Approach;
+	RangedPhaseOwner = 0;
+	NavigationFacts = FBoidNavigationFacts();
+	PositioningFacts = FBoidPositioningFacts();
+	CombatMovementFacts = FBoidCombatMovementFacts();
 	SecondsSinceLastSight = 0.0f;
 	FBoidMovementIntent EmptyIntent;
 	const bool bIntentChanged = MovementIntent.Policy != EmptyIntent.Policy
@@ -202,6 +210,7 @@ void AFlyingBoid::UpdateTargetSensing(float ElapsedSeconds)
 		bHasSight = !World->LineTraceSingleByChannel(Hit, BoidCenter, PlayerCenter, ECC_Visibility, QueryParams);
 	}
 	TargetFacts.bHasSight = bHasSight;
+	if (!bHasSight) TargetFacts.bAttackReady = false;
 
 	const float DetectionRadius = FMath::Max(0.0f, DetectionRadiusCm);
 	const float LoseRadius = FMath::Max(DetectionRadius, LoseRadiusCm);
@@ -227,6 +236,13 @@ void AFlyingBoid::UpdateTargetSensing(float ElapsedSeconds)
 			TargetFacts.bDetected = false;
 		}
 	}
+	if (!TargetFacts.bDetected) TargetFacts.bAttackReady = false;
+}
+
+void AFlyingBoid::PublishPositioning(const FBoidPositioningFacts& Facts, bool bReady)
+{
+	PositioningFacts = IsAlive() ? Facts : FBoidPositioningFacts();
+	TargetFacts.bAttackReady = IsAlive() && TargetFacts.bDetected && TargetFacts.bHasSight && bReady;
 }
 
 void AFlyingBoid::SetMovementIntent(const FBoidMovementIntent& Intent, uint64 OwnerToken)
@@ -249,13 +265,26 @@ void AFlyingBoid::SetMovementIntent(const FBoidMovementIntent& Intent, uint64 Ow
 	Sanitized.MinimumTargetDistanceCm = FMath::IsFinite(Sanitized.MinimumTargetDistanceCm)
 		? FMath::Max(0.0f, Sanitized.MinimumTargetDistanceCm) : 0.0f;
 
-	const bool bEffectiveChange = MovementIntent.Policy != Sanitized.Policy
+	const bool bEffectiveChange = MovementIntent.RangedPhaseControl != Sanitized.RangedPhaseControl
+		|| MovementIntent.bIsTransit != Sanitized.bIsTransit
+		|| MovementIntent.Policy != Sanitized.Policy
 		|| MovementIntent.bHasGoal != Sanitized.bHasGoal
 		|| MovementIntent.Goal != Sanitized.Goal
 		|| MovementIntent.ArrivalRadiusCm != Sanitized.ArrivalRadiusCm
 		|| MovementIntent.StandOffDistanceCm != Sanitized.StandOffDistanceCm
 		|| MovementIntent.MinimumTargetDistanceCm != Sanitized.MinimumTargetDistanceCm;
 	Sanitized.Revision = MovementIntent.Revision + (bEffectiveChange ? 1u : 0u);
+	if (bEffectiveChange)
+	{
+		PositioningFacts = FBoidPositioningFacts();
+		TargetFacts.bAttackReady = false;
+	}
+	if (OwnerToken != MovementIntentOwnerToken || Sanitized.Policy != EBoidMovementPolicy::RangedOrbit)
+	{
+		RequestedRangedPhase = EBoidRangedPhaseRequest::Approach;
+		RangedPhaseOwner = 0;
+	}
+	if (Sanitized.Policy != EBoidMovementPolicy::RangedOrbit) CombatMovementFacts = FBoidCombatMovementFacts();
 	MovementIntent = Sanitized;
 	MovementIntentOwnerToken = OwnerToken;
 }
@@ -279,6 +308,11 @@ void AFlyingBoid::SetMovementTarget(AActor* Target, uint64 OwnerToken)
 	if (bDead)
 	{
 		return;
+	}
+	if (MovementTarget != Target)
+	{
+		PositioningFacts = FBoidPositioningFacts();
+		TargetFacts.bAttackReady = false;
 	}
 	MovementTarget = Target;
 	MovementTargetOwnerToken = OwnerToken;
@@ -412,6 +446,8 @@ void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 	SteeringRuntimeStates.Reset();
 	MovementIntent = FBoidMovementIntent();
 	MovementIntentOwnerToken = 0;
+	RangedPhaseOwner = 0;
+	RequestedRangedPhase = EBoidRangedPhaseRequest::Approach;
 	MovementTargetOwnerToken = 0;
 }
 
@@ -436,6 +472,8 @@ void AFlyingBoid::SetWanderActive(bool bActive)
 	if (!bActive)
 	{
 		ActiveSteeringProfile = nullptr;
+		PositioningFacts = FBoidPositioningFacts();
+		TargetFacts.bAttackReady = false;
 	}
 }
 
@@ -514,13 +552,24 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	Velocity = (Velocity + DesiredAcceleration * DeltaTime).GetClampedToMaxSize(FMath::Max(0.0f, CruiseSpeed));
 	const FVector Start = GetActorLocation();
 	const FVector Delta = BoidFlight::ClampPosition(Start + Velocity * DeltaTime, Transform, Extent) - Start;
+	// Authored flight space constrains actual movement as well as route planning.
+	ASwarmSimulationRunner* Runner = GetSimulationRunner();
+	const bool bAuthoredSpace = IsValid(Runner) && Runner->NavigationMode == EBoidNavigationMode::AuthoredRoutes;
+	if (bAuthoredSpace && !Runner->IsAllowedFlightSegment(Start, Start + Delta,
+		CollisionSphere->GetScaledSphereRadius() + FMath::Max(0.f, Runner->Tuning.ObstacleMarginCm)))
+	{
+		Velocity = FVector::ZeroVector;
+		return;
+	}
 	FHitResult Hit;
 	FlightMovement->SafeMoveUpdatedComponent(Delta, GetActorQuat(), true, Hit);
 	if (bDead)
 	{
 		return;
 	}
-	if (Hit.bBlockingHit)
+	// A slide can generate additional segments; authored routes stop at contact
+	// and let the runner select a new validated steering segment next step.
+	if (Hit.bBlockingHit && !bAuthoredSpace)
 	{
 		FlightMovement->SlideAlongSurface(Delta, 1.0f - Hit.Time, Hit.Normal, Hit);
 	}
@@ -673,4 +722,40 @@ bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float Boun
 		}
 	}
 	return bHasLastValidWanderPosition && TryRelocate(LastValidWanderPosition);
+}
+
+
+bool AFlyingBoid::RequestRangedPhase(EBoidRangedPhaseRequest Phase, uint64 OwnerToken, uint64 CombatToken)
+{
+	if (!IsAlive() || !OwnerToken || !CombatToken || CombatToken != MovementIntentOwnerToken
+		|| MovementIntent.Policy != EBoidMovementPolicy::RangedOrbit
+		|| MovementIntent.RangedPhaseControl != EBoidRangedPhaseControl::StateTree) return false;
+	RequestedRangedPhase = Phase; RangedPhaseOwner = OwnerToken;
+	return true;
+}
+
+void AFlyingBoid::ReleaseRangedPhase(uint64 OwnerToken)
+{
+	if (RangedPhaseOwner != OwnerToken) return;
+	RequestedRangedPhase = EBoidRangedPhaseRequest::Approach;
+	RangedPhaseOwner = 0;
+}
+
+void AFlyingBoid::PublishMovementConstraint(EBoidCombatMovementConstraint Constraint, float Speed, const FString& Reason)
+{
+	if (!IsAlive()) return;
+	CombatMovementFacts.Constraint = Constraint;
+	CombatMovementFacts.ActualSpeedCmPerSec = Speed;
+	CombatMovementFacts.MovementReason = Reason;
+}
+
+FString AFlyingBoid::GetStateTreeAssetPath() const
+{
+	if (!IsValid(StateTree)) return TEXT("<none>");
+	// Read the component's authored reference without changing or starting it.
+	const FStructProperty* Property = FindFProperty<FStructProperty>(StateTree->GetClass(), TEXT("StateTreeRef"));
+	if (!Property || Property->Struct != FStateTreeReference::StaticStruct()) return TEXT("<unavailable>");
+	const FStateTreeReference* Reference = Property->ContainerPtrToValuePtr<FStateTreeReference>(StateTree.Get());
+	const UStateTree* Asset = Reference ? Reference->GetStateTree() : nullptr;
+	return IsValid(Asset) ? Asset->GetPathName() : TEXT("<none>");
 }

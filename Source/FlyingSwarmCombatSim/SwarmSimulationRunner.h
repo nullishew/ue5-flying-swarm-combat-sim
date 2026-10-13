@@ -2,12 +2,26 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "BoidRangedPositioning.h"
+#include "BoidNavigationTypes.h"
+#include "Templates/UniquePtr.h"
 #include "SwarmSimulationRunner.generated.h"
 
 class AFlyingBoid;
 class UBoidSteeringProfile;
 class UBoxComponent;
 class USceneComponent;
+class FBoidRangedPositionPlanner;
+class FBoidFlightRouteService;
+class FBoidCombatMovementCoordinator;
+struct FBoidCombatCoordinatorDeleter { void operator()(FBoidCombatMovementCoordinator* Coordinator) const; };
+class UNavigationGraphAsset;
+struct FBoidRouteServiceDeleter { void operator()(FBoidFlightRouteService* Service) const; };
+/** Out-of-line deletion also supports Unreal's generated vtable constructor. */
+struct FBoidRangedPlannerDeleter
+{
+	void operator()(FBoidRangedPositionPlanner* Planner) const;
+};
 
 USTRUCT(BlueprintType)
 struct FLYINGSWARMCOMBATSIM_API FSwarmTuningSettings
@@ -85,6 +99,7 @@ class FLYINGSWARMCOMBATSIM_API ASwarmSimulationRunner : public AActor
 
 public:
 	ASwarmSimulationRunner();
+	virtual ~ASwarmSimulationRunner() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaTime) override;
@@ -95,6 +110,36 @@ public:
 	void UnregisterBoid(AFlyingBoid* Boid);
 	UFUNCTION(BlueprintPure, Category = "Swarm")
 	int32 GetAgentId(AFlyingBoid* Boid) const;
+	bool IsInsideSafeBounds(const FVector& Position, float BoidRadius) const;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation") EBoidNavigationMode NavigationMode = EBoidNavigationMode::DirectOnly;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation") TObjectPtr<UNavigationGraphAsset> NavigationGraph;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation", meta=(ClampMin="1")) int32 RouteQueriesPerFrame = 32;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation", meta=(ClampMin="1")) int32 RouteExpansionsPerFrame = 64;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation", meta=(ClampMin="0.01")) float NavigationRetrySeconds = .5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation", meta=(ClampMin="1", Units="cm")) float WaypointReachToleranceCm = 80.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Navigation", meta=(ClampMin="0")) float LastKnownPursuitSeconds = 5.f;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Swarm|Navigation") int32 LastFrameRouteQueries = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Swarm|Navigation") int32 LastFrameRouteExpansions = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm Debug") bool bDrawNavigation = false;
+	UFUNCTION(BlueprintCallable, Category="Swarm|Navigation") void InvalidateNavigationGraph();
+	bool IsAllowedFlightPosition(const FVector& Position, float Radius) const;
+	bool IsAllowedFlightSegment(const FVector& Start, const FVector& Goal, float Radius) const;
+	FBoidFlightRouteService& GetRouteService();
+	UBoidSteeringProfile* ResolveSteeringProfile(const AFlyingBoid* Boid, UBoidSteeringProfile* Preferred = nullptr) const;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Swarm|Combat", meta=(ClampMin="1")) int32 CombatControlQueriesPerFrame = 64;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Swarm|Combat") int32 LastFrameCombatControlQueries = 0;
+	void AdoptNavigationRoute(int32 AgentId, const FVector& Goal, const FBoidFlightRouteResult& Route);
+	FBoidNavigationGoal GetNavigationGoal(AFlyingBoid* Boid) const;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Ranged")
+	FBoidRangedSettings RangedSettings;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm Debug")
+	bool bDrawPositioning = false;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int32 LastFrameCandidates = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int32 LastFramePositioningQueries = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	float LastFramePositioningMilliseconds = 0.f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Swarm|Bounds")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -136,9 +181,46 @@ private:
 		bool bRetreating = false;
 		bool bProgressRetreating = false;
 	};
+	struct FNavigationAgentState
+	{
+		uint64 RouteHandle = 0;
+		int32 GoalVersion = 0;
+		uint32 RouteGeneration = 0;
+		int32 SelectionVersion = INDEX_NONE;
+		int32 SelectionRouteVersion = INDEX_NONE;
+		FVector Destination = FVector::ZeroVector;
+		TArray<FVector> Waypoints;
+		int32 WaypointIndex = 0;
+		float LengthCm = 0.f;
+		float RetrySeconds = 0.f;
+		double SegmentValidatedAt = -1.;
+		int32 ValidatedWaypointIndex = INDEX_NONE;
+		EBoidNavigationMode Mode = EBoidNavigationMode::DirectOnly;
+		bool bHasDestination = false;
+		uint32 IntentRevision = 0;
+		uint64 IntentOwner = 0;
+		TWeakObjectPtr<AActor> RouteTarget;
+		EBoidRouteStatus Status = EBoidRouteStatus::Pending;
+		EBoidRouteTier Tier = EBoidRouteTier::None;
+		FString FailureReason;
+		FName PlayerRegion = NAME_None;
+		TWeakObjectPtr<AActor> LastSeenTarget;
+		FVector LastSeenPosition = FVector::ZeroVector;
+		FVector GoalTargetPosition = FVector::ZeroVector;
+		double LastSeenAt = -1.;
+		FBoidNavigationGoal Navigation;
+	};
+	TMap<int32,FNavigationAgentState> NavigationAgents;
+	TUniquePtr<FBoidFlightRouteService,FBoidRouteServiceDeleter> RouteService;
+	TArray<FBoidPlannerAgent> PlannerAgents;
+	double NavigationTime = 0.;
+	int32 NavigationCursor = 0;
+	void UpdateNavigationGoals(float DeltaTime);
 	void ApplyQueuedRegistrations();
 	void AdvanceStep(float StepTime);
-	bool IsInsideSafeBounds(const FVector& Position, float BoidRadius) const;
+	void UpdateRangedPositions(float DeltaTime);
+	TUniquePtr<FBoidRangedPositionPlanner, FBoidRangedPlannerDeleter> RangedPositionPlanner;
+	TUniquePtr<FBoidCombatMovementCoordinator, FBoidCombatCoordinatorDeleter> CombatCoordinator;
 
 	TArray<FRegisteredAgent> Agents;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingAdditions;

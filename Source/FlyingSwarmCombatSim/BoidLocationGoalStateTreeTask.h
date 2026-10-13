@@ -15,6 +15,9 @@ struct FBoidLocationGoalTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = "Goal")
 	FVector Goal = FVector::ZeroVector;
 
+	UPROPERTY(EditAnywhere, Category="Goal")
+	bool bUseLastKnownTransitGoal = false;
+
 	UPROPERTY(EditAnywhere, Category = "Goal", meta = (ClampMin = "0.0", Units = "cm"))
 	float ArrivalRadiusCm = 80.0f;
 
@@ -51,7 +54,7 @@ struct FBoidLocationGoalStateTreeTask : public FStateTreeTaskCommonBase
 
 	FBoidLocationGoalStateTreeTask()
 	{
-		bShouldCallTick = false;
+		bShouldCallTick = true;
 		bShouldStateChangeOnReselect = false;
 	}
 
@@ -59,6 +62,7 @@ struct FBoidLocationGoalStateTreeTask : public FStateTreeTaskCommonBase
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
 	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const override;
 	virtual void ExitState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 };

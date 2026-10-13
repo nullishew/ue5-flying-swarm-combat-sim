@@ -11,8 +11,25 @@ void UBoidSteeringBehavior::InitializeRuntime(FBoidSteeringRuntimeState& Runtime
 FVector UBoidSteeringBehavior::Evaluate(const FBoidSteeringInput& Input,
 	FBoidSteeringRuntimeState& Runtime) const
 {
-	return CalculateDirection(Input, Runtime).GetSafeNormal()
+	return EvaluateWithResult(Input, Runtime).Direction;
+}
+
+FBoidSteeringResult UBoidSteeringBehavior::EvaluateWithResult(const FBoidSteeringInput& Input,
+	FBoidSteeringRuntimeState& Runtime) const
+{
+	FBoidSteeringResult Result;
+	if (Input.bCoordinatedCombat && !SupportsNavigationPhase(Input.NavigationPhase)) return Result;
+	Result.Direction = CalculateDirection(Input, Runtime).GetSafeNormal()
 		* FMath::Max(0.0f, Weight) * Runtime.WeightScale;
+	Result.bHasDesiredSpeed = !Result.Direction.IsNearlyZero()
+		&& FMath::Max(0.0f, Weight) * Runtime.WeightScale > 0.0f
+		&& CalculateDesiredSpeed(Input, Result.DesiredSpeedCmPerSec);
+	Result.bHasDesiredSpeed &= FMath::IsFinite(Result.DesiredSpeedCmPerSec);
+	if (Result.bHasDesiredSpeed)
+	{
+		Result.DesiredSpeedCmPerSec = FMath::Max(0.0f, Result.DesiredSpeedCmPerSec);
+	}
+	return Result;
 }
 
 FVector UBoidWanderSteeringBehavior::CalculateDirection(const FBoidSteeringInput& Input,
@@ -37,5 +54,10 @@ FVector UBoidWanderSteeringBehavior::CalculateDirection(const FBoidSteeringInput
 FVector UBoidSeekSteeringBehavior::CalculateDirection(const FBoidSteeringInput& Input,
 	FBoidSteeringRuntimeState& Runtime) const
 {
-	return Input.bHasTarget ? (Input.TargetPosition - Input.Position).GetSafeNormal() : FVector::ZeroVector;
+	if (Input.bPreferNavigationGoal && Input.bHasGoal)
+	{
+		return (Input.Goal - Input.Position).GetSafeNormal();
+	}
+	return Input.bHasTarget && (bSeekWhenGoalPresent || !Input.bHasGoal)
+		? (Input.TargetPosition - Input.Position).GetSafeNormal() : FVector::ZeroVector;
 }

@@ -4,6 +4,7 @@
 #include "BoidPathFollowingSteeringBehavior.h"
 #include "BoidSteeringProfile.h"
 #include "FlyingBoid.h"
+#include "SwarmSimulationRunner.h"
 #include "StateTreeExecutionContext.h"
 
 namespace
@@ -17,7 +18,8 @@ namespace
 
 		for (const FBoidSteeringBehaviorEntry& Entry : Profile->Behaviors)
 		{
-			if (IsValid(Entry.Behavior) && Entry.Behavior->IsA<UBoidPathFollowingSteeringBehavior>())
+			if (IsValid(Entry.Behavior) && FMath::IsFinite(Entry.Behavior->Weight)
+				&& Entry.Behavior->Weight > 0.f && Entry.Behavior->IsA<UBoidPathFollowingSteeringBehavior>())
 			{
 				return true;
 			}
@@ -32,28 +34,42 @@ EStateTreeRunStatus FBoidLocationGoalStateTreeTask::EnterState(FStateTreeExecuti
 	AFlyingBoid* Boid = Cast<AFlyingBoid>(Context.GetOwner());
 	FBoidLocationGoalTaskInstanceData& InstanceData = Context.GetInstanceData(*this);
 	InstanceData.bHasAppliedIntent = false;
+	ASwarmSimulationRunner* Runner = IsValid(Boid) ? Boid->GetSimulationRunner() : nullptr;
+	UBoidSteeringProfile* EffectiveProfile = IsValid(Runner)
+		? Runner->ResolveSteeringProfile(Boid, InstanceData.SteeringProfile)
+		: (IsValid(InstanceData.SteeringProfile) ? InstanceData.SteeringProfile.Get() : (IsValid(Boid) ? Boid->GetSteeringProfile() : nullptr));
 	if (!IsValid(Boid) || !Boid->IsAlive() || InstanceData.Goal.ContainsNaN()
-		|| !HasPathFollowingBehavior(InstanceData.SteeringProfile))
+		|| !HasPathFollowingBehavior(EffectiveProfile))
 	{
 		return EStateTreeRunStatus::Failed;
 	}
 
+	if (InstanceData.bUseLastKnownTransitGoal && !Boid->GetNavigationFacts().bHasTransitGoal) return EStateTreeRunStatus::Failed;
 	InstanceData.PreviousIntent = Boid->GetMovementIntent();
 	InstanceData.PreviousIntentOwner = Boid->GetMovementIntentOwner();
 	InstanceData.IntentToken = Boid->AcquireIntentToken();
 	InstanceData.PreviousProfile = Boid->GetSteeringProfile();
-	InstanceData.AppliedProfile = InstanceData.SteeringProfile;
+	InstanceData.AppliedProfile = EffectiveProfile;
 	InstanceData.bWasSteeringActive = Boid->IsSteeringActive();
 
 	FBoidMovementIntent GoalIntent = InstanceData.PreviousIntent;
 	GoalIntent.Policy = EBoidMovementPolicy::LocationArrival;
 	GoalIntent.bHasGoal = true;
-	GoalIntent.Goal = InstanceData.Goal;
+	GoalIntent.bIsTransit = InstanceData.bUseLastKnownTransitGoal;
+	GoalIntent.Goal = InstanceData.bUseLastKnownTransitGoal ? Boid->GetNavigationFacts().TransitGoal : InstanceData.Goal;
 	GoalIntent.ArrivalRadiusCm = FMath::Max(0.0f, InstanceData.ArrivalRadiusCm);
 	Boid->SetMovementIntent(GoalIntent, InstanceData.IntentToken);
-	Boid->SetSteeringProfile(InstanceData.SteeringProfile);
+	Boid->SetSteeringProfile(EffectiveProfile);
 	InstanceData.bHasAppliedIntent = true;
 	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FBoidLocationGoalStateTreeTask::Tick(FStateTreeExecutionContext& Context,const float DeltaTime) const
+{
+	const auto& Data=Context.GetInstanceData(*this);
+	const AFlyingBoid* Boid=Cast<AFlyingBoid>(Context.GetOwner());
+	return IsValid(Boid)&&Boid->IsAlive()&&Boid->GetMovementIntentOwner()==Data.IntentToken
+		&&(!Data.bUseLastKnownTransitGoal||Boid->GetNavigationFacts().bHasTransitGoal)?EStateTreeRunStatus::Running:EStateTreeRunStatus::Failed;
 }
 
 void FBoidLocationGoalStateTreeTask::ExitState(FStateTreeExecutionContext& Context,
