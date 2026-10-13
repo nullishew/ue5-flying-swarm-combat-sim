@@ -23,15 +23,8 @@ public class FlyingSwarmCombatSim : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
-		PublicIncludePaths.AddRange(new string[] {
-			"FlyingSwarmCombatSim",
-			"FlyingSwarmCombatSim/Variant_Horror",
-			"FlyingSwarmCombatSim/Variant_Horror/UI",
-			"FlyingSwarmCombatSim/Variant_Shooter",
-			"FlyingSwarmCombatSim/Variant_Shooter/AI",
-			"FlyingSwarmCombatSim/Variant_Shooter/UI",
-			"FlyingSwarmCombatSim/Variant_Shooter/Weapons"
-		});
+		// Feature-qualified headers resolve from the module root, including editor consumers.
+		PublicIncludePaths.Add(ModuleDirectory);
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

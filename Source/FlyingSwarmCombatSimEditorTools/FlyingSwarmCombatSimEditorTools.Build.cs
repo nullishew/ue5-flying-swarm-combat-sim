@@ -6,6 +6,9 @@ public class FlyingSwarmCombatSimEditorTools : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// Editor-private feature headers resolve from this module root.
+		PrivateIncludePaths.Add(ModuleDirectory);
+
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
 			"CoreUObject",

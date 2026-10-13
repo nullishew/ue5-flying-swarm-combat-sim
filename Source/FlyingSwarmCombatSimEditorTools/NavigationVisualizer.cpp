@@ -1,6 +1,6 @@
 #include "NavigationVisualizer.h"
-#include "NavigationWaypoint.h"
-#include "RoomArea.h"
+#include "World_Navigation/NavigationWaypoint.h"
+#include "World_Navigation/RoomArea.h"
 #include "Components/BoxComponent.h"
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
