@@ -2,6 +2,9 @@
 
 #include "BoidFlightAlgorithms.h"
 #include "BoidSteeringBehavior.h"
+#include "BoidRangedPositionPlanner.h"
+#include "BoidCombatMovementCoordinator.h"
+#include "BoidFlightRouteService.h"
 #include "BoidSteeringProfile.h"
 
 #include "Components/BoxComponent.h"
@@ -11,6 +14,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "HAL/PlatformTime.h"
 #include "FlyingBoid.h"
 #include "FlyingCharacter.h"
 
@@ -33,6 +37,14 @@ namespace
 		bool bRetreating = false;
 		bool bHasTarget = false;
 		bool bSteeringActive = false;
+		bool bPlannerControlled = false;
+	bool bCoordinatedCombat = false;
+		bool bNavigationHold = false;
+		bool bPreferNavigationGoal = false;
+		EBoidNavigationPhase NavigationPhase = EBoidNavigationPhase::None;
+		FBoidOrbitContext OrbitContext;
+		bool bContinuousGoal = false;
+		float DesiredSpeed = 0.f;
 	};
 
 	struct FSteeringOutput
@@ -46,9 +58,12 @@ namespace
 		FVector Acceleration = FVector::ZeroVector;
 		FVector ProbeEnd = FVector::ZeroVector;
 		float TargetSpeed = 0.0f;
+		float DesiredSpeed = 0.0f;
+		bool bHasDesiredSpeed = false;
 		bool bThreatened = false;
 		bool bIntentionalStop = false;
 		bool bSteeringActive = false;
+		EBoidCombatMovementConstraint Constraint = EBoidCombatMovementConstraint::None;
 	};
 
 	FCollisionQueryParams ObstacleQuery(const FBoidSnapshot& Self)
@@ -92,6 +107,9 @@ namespace
 
 ASwarmSimulationRunner::ASwarmSimulationRunner()
 {
+	RangedPositionPlanner.Reset(new FBoidRangedPositionPlanner());
+	CombatCoordinator.Reset(new FBoidCombatMovementCoordinator());
+	RouteService.Reset(new FBoidFlightRouteService());
 	PrimaryActorTick.bCanEverTick = true;
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -100,6 +118,36 @@ ASwarmSimulationRunner::ASwarmSimulationRunner()
 	WanderBounds->InitBoxExtent(FVector(2500.0f, 2500.0f, 1000.0f));
 	WanderBounds->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	WanderBounds->SetCanEverAffectNavigation(false);
+}
+
+void FBoidRangedPlannerDeleter::operator()(FBoidRangedPositionPlanner* Planner) const
+{
+	delete Planner;
+}
+
+void FBoidCombatCoordinatorDeleter::operator()(FBoidCombatMovementCoordinator* Coordinator) const { delete Coordinator; }
+
+UBoidSteeringProfile* ASwarmSimulationRunner::ResolveSteeringProfile(const AFlyingBoid* Boid, UBoidSteeringProfile* Preferred) const
+{
+	if (IsValid(Preferred)) return Preferred;
+	if (IsValid(Boid) && IsValid(Boid->GetSteeringProfile())) return Boid->GetSteeringProfile();
+	if (IsValid(DefaultSteeringProfile)) return DefaultSteeringProfile.Get();
+	return FallbackSteeringProfile.Get();
+}
+
+ASwarmSimulationRunner::~ASwarmSimulationRunner() = default;
+
+void ASwarmSimulationRunner::UpdateRangedPositions(float DeltaTime)
+{
+	PlannerAgents.Reset(Agents.Num());
+	for (const FRegisteredAgent& Agent : Agents) PlannerAgents.Add({Agent.Boid.Get(), Agent.Id});
+	PlannerAgents.Sort([](const FBoidPlannerAgent& A,const FBoidPlannerAgent& B){return A.Id<B.Id;});
+	RouteService->BeginFrame(this,PlannerAgents);
+	RouteService->Tick(this,PlannerAgents);
+	RangedPositionPlanner->Update(*this,PlannerAgents,DeltaTime);
+	CombatCoordinator->Update(*this,PlannerAgents,*RangedPositionPlanner,DeltaTime);
+	UpdateNavigationGoals(DeltaTime);
+	CombatCoordinator->FinalizeNavigation(*this, PlannerAgents, DeltaTime);
 }
 
 void ASwarmSimulationRunner::BeginPlay()
@@ -172,10 +220,12 @@ void ASwarmSimulationRunner::EndPlay(EEndPlayReason::Type EndPlayReason)
 			Boid->ClearSimulationRunner(this);
 		}
 	}
+	for(const FRegisteredAgent& Agent:Agents){RouteService->ResetAgent(Agent.Id);RangedPositionPlanner->ResetAgent(Agent.Id);CombatCoordinator->ResetAgent(Agent.Id);}
 	Agents.Reset();
 	PendingAdditions.Reset();
 	PendingRemovals.Reset();
 	Super::EndPlay(EndPlayReason);
+	NavigationAgents.Reset();PlannerAgents.Reset();NavigationTime=0.;
 }
 
 void ASwarmSimulationRunner::RegisterBoid(AFlyingBoid* Boid)
@@ -258,6 +308,9 @@ void ASwarmSimulationRunner::ApplyQueuedRegistrations()
 	{
 		if (!Agent.Boid.IsValid() || !Agent.Boid->IsAlive() || Removals.Contains(Agent.Boid))
 		{
+			RangedPositionPlanner->ResetAgent(Agent.Id);CombatCoordinator->ResetAgent(Agent.Id);
+			RouteService->ResetAgent(Agent.Id);
+			NavigationAgents.Remove(Agent.Id);
 			if (AFlyingBoid* Boid = Agent.Boid.Get())
 			{
 				if (IsValid(Boid->StateTree) && Boid->StateTree->IsRunning())
@@ -336,6 +389,8 @@ void ASwarmSimulationRunner::Tick(float DeltaTime)
 			WanderBounds->GetComponentQuat(), FColor::Cyan, false, 0.0f, 0, 1.0f);
 	}
 	const float MaxStep = FMath::Max(0.001f, Tuning.MaxStepSeconds);
+	ApplyQueuedRegistrations();
+	UpdateRangedPositions(DeltaTime);
 	float RemainingTime = FMath::Min(DeltaTime, FMath::Max(0.001f, Tuning.MaxFrameSeconds));
 	const int32 MaxSteps = FMath::Clamp(Tuning.MaxSubsteps, 1, 16);
 	for (int32 Step = 0; Step < MaxSteps && RemainingTime > UE_SMALL_NUMBER; ++Step)
@@ -344,6 +399,25 @@ void ASwarmSimulationRunner::Tick(float DeltaTime)
 		AdvanceStep(StepTime);
 		RemainingTime -= StepTime;
 	}
+	TArray<FBoidPlannerAgent> ReadinessAgents;
+	for (const FRegisteredAgent& Agent : Agents) ReadinessAgents.Add({Agent.Boid.Get(), Agent.Id});
+	CombatCoordinator->ValidateReadinessAfterMovement(*this, ReadinessAgents, FMath::Min(DeltaTime,FMath::Max(.001f,Tuning.MaxFrameSeconds)));
+	AFlyingBoid* Selected = IsValid(DebugBoid) ? DebugBoid.Get() : TestBoid.Get();
+	if (bDrawPositioning && IsValid(Selected) && Selected->IsAlive())
+	{
+		const FBoidCombatMovementFacts Facts = Selected->GetCombatMovementFacts();
+		const auto PhaseName = [](EBoidNavigationPhase Phase) { return StaticEnum<EBoidNavigationPhase>()->GetNameStringByValue(static_cast<int64>(Phase)); };
+		const FString Text = FString::Printf(TEXT("%s\nrequested %s / executed %s / status %s\nrange %.0f ideal %.0f band %.0f-%.0f orbit %d retreat %d\nselection %d candidates %d/%d rebases %d stale %d\nhold %s %.2fs / speed %.0f desired %.0f / %s\n%s\nprofile %s\ntree %s"),
+			*Facts.BlueprintClass,
+			*StaticEnum<EBoidRangedPhaseRequest>()->GetNameStringByValue(static_cast<int64>(Facts.RequestedPhase)), *PhaseName(Facts.ExecutedPhase),
+			*StaticEnum<EBoidCombatControlStatus>()->GetNameStringByValue(static_cast<int64>(Facts.Status)),
+			Facts.TargetRangeCm, Facts.DesiredRangeCm, Facts.MinimumRangeCm, Facts.MaximumRangeCm, Facts.bOrbiting, Facts.bRetreating,
+			Facts.SelectionVersion, Facts.CandidatesEvaluated, Facts.CandidateCount, Facts.Rebases, Facts.StaleResults,
+			*StaticEnum<EBoidCombatHoldReason>()->GetNameStringByValue(static_cast<int64>(Facts.HoldReason)), Facts.HoldSeconds,
+			Facts.ActualSpeedCmPerSec, Facts.DesiredSpeedCmPerSec, *Facts.MovementReason, *Facts.Detail, *Facts.EffectiveProfile, *Facts.StateTreeAsset);
+		DrawDebugString(GetWorld(), Selected->GetActorLocation()+FVector(0,0,130), Text, nullptr, FColor::White, 0.f);
+	}
+
 }
 
 void ASwarmSimulationRunner::AdvanceStep(float StepTime)
@@ -381,6 +455,23 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 			const AFlyingBoid* TargetBoid = Cast<AFlyingBoid>(Boid->MovementTarget.Get());
 			Snapshot.bHasTarget = (!Player || Player->IsAlive()) && (!TargetBoid || TargetBoid->IsAlive());
 		}
+		Snapshot.bCoordinatedCombat = Snapshot.MovementIntent.Policy == EBoidMovementPolicy::RangedOrbit;
+		const bool UsesNavigation = Snapshot.bCoordinatedCombat
+			|| Snapshot.MovementIntent.bIsTransit
+			|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes
+				&& (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::FollowStandOff || Snapshot.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival));
+		if (UsesNavigation)
+		{
+			const FBoidNavigationGoal Navigation=GetNavigationGoal(Boid);
+			Snapshot.bPlannerControlled=true;
+			Snapshot.MovementIntent.Policy=EBoidMovementPolicy::LocationArrival;
+			Snapshot.Goal=Navigation.Goal;Snapshot.bHasGoal=Navigation.bHasGoal;
+			Snapshot.bNavigationHold=Navigation.bHoldPosition;
+			Snapshot.bContinuousGoal=Navigation.bContinuousGoal;
+			Snapshot.bPreferNavigationGoal=Navigation.bPreferNavigationGoal;
+			Snapshot.NavigationPhase=Navigation.Phase;Snapshot.OrbitContext=Navigation.OrbitContext;
+			Snapshot.DesiredSpeed=Navigation.DesiredSpeed;
+		}
 	}
 
 	for (FBoidSnapshot& Snapshot : Snapshots)
@@ -403,7 +494,12 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 		};
 		if (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival)
 		{
-			Snapshot.bDestinationBlocked = !Snapshot.bHasGoal || !IsDirectGoalClear(Snapshot.Goal);
+			// Authored route sweeps are owned by the frame-budgeted service. Local
+			// obstacle probes and collision-checked movement still protect each step.
+			Snapshot.bDestinationBlocked = !Snapshot.bHasGoal
+				|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes && Snapshot.bPlannerControlled
+					? !IsAllowedFlightSegment(Snapshot.Position, Snapshot.Goal, Snapshot.Radius + FMath::Max(0.f, Tuning.ObstacleMarginCm))
+					: !IsDirectGoalClear(Snapshot.Goal));
 		}
 		FRegisteredAgent* Record = Agents.FindByPredicate([&](const FRegisteredAgent& Agent)
 		{
@@ -472,11 +568,7 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 		}
 		AFlyingBoid* Boid = Self.Boid.Get();
 		Output.bSteeringActive = true;
-		UBoidSteeringProfile* Profile = Boid->GetSteeringProfile();
-		if (!Profile)
-		{
-			Profile = DefaultSteeringProfile ? DefaultSteeringProfile.Get() : FallbackSteeringProfile.Get();
-		}
+		UBoidSteeringProfile* Profile = ResolveSteeringProfile(Boid);
 		Boid->PrepareSteeringRuntime(Profile);
 		if (Profile)
 		{
@@ -488,19 +580,37 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 			SteeringInput.bHasTarget = Self.bHasTarget;
 			SteeringInput.Goal = Self.Goal;
 			SteeringInput.bHasGoal = Self.bHasGoal && !Self.bDestinationBlocked;
+			SteeringInput.bContinuousGoal = Self.bContinuousGoal;
+			SteeringInput.NavigationPhase = Self.NavigationPhase;
+			SteeringInput.OrbitContext = Self.OrbitContext;
+			SteeringInput.bPreferNavigationGoal = Self.bPreferNavigationGoal || Self.bRetreating;
+			SteeringInput.FlightSpeedLimitCmPerSec = FMath::Min(FMath::Max(0.f,Tuning.CruiseSpeedCmPerSec),FMath::Max(0.f,Boid->MaxSpeedCmPerSec));
+			SteeringInput.bCoordinatedCombat = Self.bCoordinatedCombat;
+			SteeringInput.bHasDesiredSpeed = Self.NavigationPhase == EBoidNavigationPhase::Orbit || Self.NavigationPhase == EBoidNavigationPhase::Retreat;
+			SteeringInput.DesiredSpeedCmPerSec = Self.DesiredSpeed;
 			SteeringInput.DeltaTime = StepTime;
 			SteeringInput.AgentId = Self.Id;
 			FVector ProfileIntent = FVector::ZeroVector;
 			for (int32 BehaviorIndex = 0; BehaviorIndex < Profile->Behaviors.Num(); ++BehaviorIndex)
 			{
 				const UBoidSteeringBehavior* Behavior = Profile->Behaviors[BehaviorIndex].Behavior;
-				if (Behavior)
+				if (IsValid(Behavior) && FMath::IsFinite(Behavior->Weight) && Behavior->Weight > 0.f
+					&& (!Self.bCoordinatedCombat || Behavior->SupportsNavigationPhase(Self.NavigationPhase)))
 				{
-					ProfileIntent += Behavior->Evaluate(SteeringInput, Boid->GetSteeringRuntimeState(BehaviorIndex));
+					const FBoidSteeringResult Contribution = Behavior->EvaluateWithResult(SteeringInput, Boid->GetSteeringRuntimeState(BehaviorIndex));
+					if (Contribution.Direction.ContainsNaN()) continue;
+					ProfileIntent += Contribution.Direction;
+					if (Contribution.bHasDesiredSpeed && FMath::IsFinite(Contribution.DesiredSpeedCmPerSec)
+						&& (!Self.bCoordinatedCombat || Behavior->IsPrimaryMovementForPhase(Self.NavigationPhase)))
+					{
+						Output.DesiredSpeed = Output.bHasDesiredSpeed
+							? FMath::Min(Output.DesiredSpeed, Contribution.DesiredSpeedCmPerSec) : Contribution.DesiredSpeedCmPerSec;
+						Output.bHasDesiredSpeed = true;
+					}
 				}
 			}
-			Output.ProfileIntent = Self.bRetreating
-				? (Self.Goal - Self.Position).GetSafeNormal() : ProfileIntent;
+			// Goal preference belongs to the behavior input; profiles own their direction contributions.
+			Output.ProfileIntent = ProfileIntent;
 		}
 		FVector SeparationSum = FVector::ZeroVector;
 		FVector AlignmentSum = FVector::ZeroVector;
@@ -687,6 +797,7 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 		const float SafeSpeed = FMath::Sqrt(2.0f * Brake * FMath::Max(0.0f,
 			SteeringClearance - BoidFlight::ContactSkinCm));
 		Output.TargetSpeed = FMath::Min(CruiseSpeed, SafeSpeed);
+		Output.Constraint = SafeSpeed < CruiseSpeed ? EBoidCombatMovementConstraint::Obstacle : EBoidCombatMovementConstraint::SpeedLimit;
 		const bool bArrivalPolicy = Self.MovementIntent.Policy != EBoidMovementPolicy::Cruise;
 		float RemainingDistance = 0.0f;
 		if (Self.bRetreating || Self.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival)
@@ -707,10 +818,15 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 		const bool bArrivalEmergency = bCriticalSeparation || (Output.bThreatened
 			&& ForwardClearance < FMath::Max(Self.Radius + Tuning.ObstacleMarginCm,
 				Speed * Tuning.SteeringResponseSeconds));
-		if (bArrivalPolicy && !bArrivalEmergency)
+		if (Output.bHasDesiredSpeed)
+		{
+			Output.TargetSpeed = FMath::Min(Output.TargetSpeed, Output.DesiredSpeed);
+		}
+		if (bArrivalPolicy && !bArrivalEmergency && !Self.bContinuousGoal)
 		{
 			const float ArrivalCap = FMath::Sqrt(2.0f * Brake * RemainingDistance);
 			Output.TargetSpeed = FMath::Min(Output.TargetSpeed, ArrivalCap);
+			Output.Constraint = EBoidCombatMovementConstraint::Arrival;
 			Output.bIntentionalStop = !Self.bDestinationBlocked
 				&& (Self.bHasTarget || Self.bHasGoal)
 				&& ArrivalCap <= FMath::Max(1.0f, Tuning.MinimumProgressSpeedCmPerSec);
@@ -724,11 +840,16 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 				Output.TargetSpeed = 0.0f;
 			}
 		}
+		if (Self.bNavigationHold && !bArrivalEmergency)
+		{
+			Output.TargetSpeed=0.f;Output.bIntentionalStop=true;Output.Constraint=EBoidCombatMovementConstraint::Hold;
+		}
 		if (Output.bThreatened)
 		{
 			Output.TargetSpeed = FMath::Min(Output.TargetSpeed,
 				CruiseSpeed * FMath::Clamp(ChosenClearance / Lookahead, 0.25f, 1.0f));
 		}
+		if (bCriticalSeparation) Output.Constraint = EBoidCombatMovementConstraint::EmergencySeparation;
 		const float Accel = FMath::Max(0.0f, Boid->MaxAccelerationCmPerSec2 * Tuning.AccelerationScale);
 		const float Limit = Output.TargetSpeed < Speed ? FMath::Max(Accel, Brake) : Accel;
 		Output.Acceleration = ((SteeringDirection * Output.TargetSpeed - Self.Velocity)
@@ -753,6 +874,8 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 		{
 			continue; // A swept-movement callback may have killed or removed the actor.
 		}
+		Boid->PublishMovementConstraint(Outputs[Index].Constraint, Boid->GetFlightVelocity().Size(),
+			StaticEnum<EBoidCombatMovementConstraint>()->GetNameStringByValue(static_cast<int64>(Outputs[Index].Constraint)));
 		float StalledSeconds = 0.0f;
 		int32 RecoveryCount = 0;
 		for (FRegisteredAgent& Agent : Agents)
@@ -778,7 +901,7 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 					Agent.ProgressWindowStart = Snapshots[Index].Position;
 					const FBoidSnapshot& Snapshot = Snapshots[Index];
 					Agent.bProgressHasDestination = Snapshot.bRetreating
-						|| (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival && Snapshot.bHasGoal)
+						|| (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival && Snapshot.bHasGoal && !Snapshot.bContinuousGoal)
 						|| (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::FollowStandOff && Snapshot.bHasTarget);
 					Agent.ProgressDestination = (Snapshot.bRetreating
 						|| Snapshot.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival)
@@ -811,7 +934,17 @@ void ASwarmSimulationRunner::AdvanceStep(float StepTime)
 				{
 					Boid->HoldAvoidanceDirection(FVector::ZeroVector, 0.0f);
 					++Agent.RecoveryCount;
-					if (!Boid->RecoverWanderFromStall(WanderBounds, Tuning.BoundsMarginCm, SpeedLimit))
+					if (Snapshots[Index].bPlannerControlled)
+					{
+						RangedPositionPlanner->RequestRefresh(Agent.Id);
+						CombatCoordinator->ResetPosition(Agent.Id);
+						if(FNavigationAgentState* State=NavigationAgents.Find(Agent.Id))
+						{if(State->RouteHandle)RouteService->Cancel(State->RouteHandle);State->RouteHandle=0;State->Status=EBoidRouteStatus::Pending;
+						 State->Waypoints.Reset();State->RetrySeconds=NavigationRetrySeconds;State->SegmentValidatedAt=-1.;}
+
+					}
+					else if (NavigationMode == EBoidNavigationMode::AuthoredRoutes
+						|| !Boid->RecoverWanderFromStall(WanderBounds, Tuning.BoundsMarginCm, SpeedLimit))
 					{
 						UE_LOG(LogTemp, Warning, TEXT("Boid %s cannot recover: no free escape inside WanderBounds."), *Boid->GetName());
 					}

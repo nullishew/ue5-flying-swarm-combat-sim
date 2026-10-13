@@ -28,4 +28,6 @@ class FLYINGSWARMCOMBATSIM_API UBoidSteeringProfile : public UDataAsset
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Steering", meta = (TitleProperty = "EntryId"))
 	TArray<FBoidSteeringBehaviorEntry> Behaviors;
+	/** One primary per phase; configuration only, no mutation or movement. */
+	bool ValidateCombatProfile(FString& OutReason) const;
 };

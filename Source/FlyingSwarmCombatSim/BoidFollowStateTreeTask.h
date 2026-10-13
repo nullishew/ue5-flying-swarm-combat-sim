@@ -1,21 +1,11 @@
 #pragma once
-
-#include "CoreMinimal.h"
-#include "StateTreeTaskBase.h"
-#include "BoidIntentTypes.h"
+#include "BoidTargetSteeringStateTreeTask.h"
 #include "BoidFollowStateTreeTask.generated.h"
 
-class AActor;
-class UBoidSteeringProfile;
-
 USTRUCT()
-struct FBoidFollowTaskInstanceData
+struct FLYINGSWARMCOMBATSIM_API FBoidFollowTaskInstanceData : public FBoidTargetSteeringTaskInstanceData
 {
 	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, Category = "Steering")
-	TObjectPtr<UBoidSteeringProfile> SteeringProfile;
-
 	UPROPERTY(EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0", Units = "cm"))
 	float StandOffDistanceCm = 600.0f;
 
@@ -25,60 +15,14 @@ struct FBoidFollowTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = "Movement", meta = (ClampMin = "0.0", Units = "cm"))
 	float ArrivalRadiusCm = 80.0f;
 
-	UPROPERTY(Transient)
-	TObjectPtr<AActor> PreviousTarget;
-
-	UPROPERTY(Transient)
-	TWeakObjectPtr<AActor> AssignedTarget;
-
-	UPROPERTY(Transient)
-	uint64 IntentToken = 0;
-
-	UPROPERTY(Transient)
-	uint64 PreviousTargetOwner = 0;
-
-	UPROPERTY(Transient)
-	uint64 PreviousIntentOwner = 0;
-
-	UPROPERTY(Transient)
-	FBoidMovementIntent PreviousIntent;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UBoidSteeringProfile> PreviousProfile;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UBoidSteeringProfile> AppliedProfile;
-
-	UPROPERTY(Transient)
-	bool bWasSteeringActive = false;
-
-	UPROPERTY(Transient)
-	bool bHasAppliedIntent = false;
-
-	UPROPERTY(Transient)
-	bool bDisabledSteeringAfterTargetLoss = false;
-
-	UPROPERTY(Transient)
-	bool bLostOwnership = false;
 };
 
-/** Assigns the current sensed player and FollowStandOff intent; movement stays with the runner. */
-USTRUCT(meta = (DisplayName = "Follow Detected Target", Category = "Boid"))
-struct FBoidFollowStateTreeTask : public FStateTreeTaskCommonBase
+/** Selects stand-off pursuit; target/profile ownership is shared with other target tasks. */
+USTRUCT(meta=(DisplayName="Follow Detected Target", Category="Boid"))
+struct FLYINGSWARMCOMBATSIM_API FBoidFollowStateTreeTask : public FBoidTargetSteeringStateTreeTask
 {
 	GENERATED_BODY()
-
-	FBoidFollowStateTreeTask()
-	{
-		bShouldCallTick = true;
-		bShouldStateChangeOnReselect = false;
-	}
-
-	using FInstanceDataType = FBoidFollowTaskInstanceData;
-	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
-	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
-		const FStateTreeTransitionResult& Transition) const override;
-	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const override;
-	virtual void ExitState(FStateTreeExecutionContext& Context,
-		const FStateTreeTransitionResult& Transition) const override;
+	virtual const UStruct* GetInstanceDataType() const override { return FBoidFollowTaskInstanceData::StaticStruct(); }
+	virtual FBoidMovementIntent MakeIntent(const FBoidTargetSteeringTaskInstanceData& Data) const override;
+	virtual bool SupportsProfile(const UBoidSteeringProfile* Profile) const override;
 };

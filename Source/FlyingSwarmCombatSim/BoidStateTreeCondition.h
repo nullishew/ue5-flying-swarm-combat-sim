@@ -10,7 +10,12 @@ enum class EBoidStateTreeFact : uint8
 	Detected,
 	HasSight,
 	AttackReady,
-	Dead
+	Dead,
+	HasTransitGoal,
+	HasNavigationRoute,
+	Orbiting,
+	NavigationFailed,
+	CanOrbit
 };
 
 USTRUCT()
