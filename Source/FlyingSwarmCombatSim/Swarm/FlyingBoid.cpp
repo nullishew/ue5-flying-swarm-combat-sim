@@ -1,4 +1,5 @@
 #include "Swarm/FlyingBoid.h"
+#include "Combat/BoidAttackComponent.h"
 #include "StateTreeReference.h"
 #include "StateTree.h"
 #include "UObject/UnrealType.h"
@@ -31,6 +32,7 @@ AFlyingBoid::AFlyingBoid()
 	CollisionSphere->SetCollisionProfileName(TEXT("Pawn"));
 	// Local separation owns boid spacing; their sweeps must not block one another.
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
 	CollisionSphere->SetGenerateOverlapEvents(false);
 
 	FlightMovement = CreateDefaultSubobject<UBoidFlightMovementComponent>(TEXT("FlightMovement"));
@@ -48,6 +50,8 @@ AFlyingBoid::AFlyingBoid()
 
 	StateTree = CreateDefaultSubobject<UStateTreeComponent>(TEXT("StateTree"));
 	StateTree->SetStartLogicAutomatically(false);
+
+	AttackComponent = CreateDefaultSubobject<UBoidAttackComponent>(TEXT("AttackComponent"));
 }
 
 void AFlyingBoid::BeginPlay()
@@ -119,6 +123,7 @@ void AFlyingBoid::HandleDeath()
 		return;
 	}
 	bDead = true;
+	if (IsValid(AttackComponent)) AttackComponent->DeactivateCombatContext(0);
 	SetWanderActive(false);
 	Velocity = FVector::ZeroVector;
 	MovementTarget = nullptr;
@@ -154,6 +159,11 @@ void AFlyingBoid::HandleDeath()
 	{
 		Runner->UnregisterBoid(this);
 	}
+}
+
+FBoidAttackFacts AFlyingBoid::GetAttackFacts() const
+{
+	return IsValid(AttackComponent) ? AttackComponent->GetAttackFacts() : FBoidAttackFacts();
 }
 
 void AFlyingBoid::HideDeadVisuals()
@@ -427,6 +437,8 @@ void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	// Blueprint collision presets must not turn flying projectiles into obstacles.
+	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
 	Visual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	FlightMovement->SetUpdatedComponent(CollisionSphere);
 	bHasLastValidWanderPosition = false;
