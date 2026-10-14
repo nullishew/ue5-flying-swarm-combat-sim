@@ -22,6 +22,13 @@ enum class EBoidAttackRejection : uint8
 	SpawnFailed
 };
 
+UENUM(BlueprintType)
+enum class EBoidAttackPattern : uint8
+{
+	Single,
+	Fan
+};
+
 USTRUCT(BlueprintType)
 struct FLYINGSWARMCOMBATSIM_API FBoidAttackFacts
 {
@@ -34,6 +41,12 @@ struct FLYINGSWARMCOMBATSIM_API FBoidAttackFacts
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") bool bCloseEligible = false;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") bool bAttemptDue = false;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") EBoidAttackRejection LastRejection = EBoidAttackRejection::ContextInactive;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") float AssignedFanProbability = 0.f;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") FVector PredictedAimPoint = FVector::ZeroVector;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack", meta=(Units="s")) float AppliedPredictionSeconds = 0.f;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") EBoidAttackPattern SelectedPattern = EBoidAttackPattern::Single;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") int32 LaunchedProjectileCount = 0;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") int32 VolleyCount = 0;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack") int32 ShotCount = 0;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Boid|Attack", meta=(Units="s")) float SecondsUntilAttempt = 0.f;
 };

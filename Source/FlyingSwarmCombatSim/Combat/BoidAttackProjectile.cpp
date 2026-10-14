@@ -219,4 +219,6 @@ void AFlyingBoidAttackProjectile::ConfigureCollisionResponses()
 	// ranged-position selection, readiness, or camera/aim traces.
 	CollisionComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 	CollisionComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	// Fan bullets share a muzzle and must never collide with one another.
+	CollisionComponent->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
 }

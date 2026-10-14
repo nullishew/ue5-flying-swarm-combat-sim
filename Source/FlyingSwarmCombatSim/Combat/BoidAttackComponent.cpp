@@ -1,6 +1,8 @@
 #include "Combat/BoidAttackComponent.h"
 
 #include "Combat/BoidAttackProjectile.h"
+#include "Combat/BoidAttackAiming.h"
+#include "UObject/UnrealType.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SphereComponent.h"
@@ -20,6 +22,33 @@ UBoidAttackComponent::UBoidAttackComponent()
 	PrimaryComponentTick.TickGroup = TG_PostPhysics;
 }
 
+#if WITH_EDITOR
+void UBoidAttackComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UBoidAttackComponent, FanProjectileCount))
+	{
+		FanProjectileCount = BoidAttack::NormalizeFanCount(FanProjectileCount);
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
+bool UBoidAttackComponent::InitializeRandomState()
+{
+	if (bRandomInitialized) return true;
+	AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
+	ASwarmSimulationRunner* Runner = IsValid(Boid) ? Boid->GetSimulationRunner() : nullptr;
+	if (!IsValid(Runner)) return false;
+	const int32 AgentId = Runner->GetAgentId(Boid);
+	if (AgentId == INDEX_NONE) return false;
+	AttackRandom.Initialize(BoidAttack::RandomSeed(Boid->GetSimulationSeed(), AgentId));
+	AssignedFanProbability = BoidAttack::AssignFanProbability(AttackRandom,
+		SnapshottedMinimumFanProbability, SnapshottedMaximumFanProbability);
+	bRandomInitialized = true;
+	AttackFacts.AssignedFanProbability = AssignedFanProbability;
+	return true;
+}
+
 void UBoidAttackComponent::BeginPlay()
 {
 	Super::BeginPlay();
@@ -28,6 +57,21 @@ void UBoidAttackComponent::BeginPlay()
 	if (!ResolvedMuzzle && MuzzleReference.ComponentProperty.IsNone() && MuzzleReference.PathToComponent.IsEmpty() && !MuzzleReference.OverrideComponent.IsValid() && !MuzzleReference.OtherActor.IsValid()
 		&& OwnerBoid) ResolvedMuzzle = OwnerBoid->CollisionSphere;
 
+	// Normalize saved defaults too; editor metadata alone cannot validate old assets.
+	const auto SafeValue = [](float Value, float Default, float Minimum, float Maximum)
+	{
+		return FMath::IsFinite(Value) ? FMath::Clamp(Value, Minimum, Maximum) : Default;
+	};
+	SnapshottedPredictionStrength = SafeValue(PredictionStrength, 1.f, 0.f, 1.f);
+	SnapshottedMaximumPredictionSeconds = SafeValue(MaximumPredictionSeconds, 1.25f, 0.f, MAX_flt);
+	bSnapshottedEnableFans = bEnableFans;
+	SnapshottedFanCount = BoidAttack::NormalizeFanCount(FanProjectileCount);
+	SnapshottedFanAngle = SafeValue(FanTotalAngleDegrees, 24.f, 0.f, 180.f);
+	SnapshottedMinimumFanDistance = SafeValue(MinimumFanDistanceCm, 400.f, 0.f, MAX_flt);
+	SnapshottedFanDamageMultiplier = SafeValue(FanTotalDamageMultiplier, 1.5f, 0.f, 10.f);
+	SnapshottedMinimumFanProbability = SafeValue(MinimumFanProbability, 0.10f, 0.f, 1.f);
+	SnapshottedMaximumFanProbability = SafeValue(MaximumFanProbability, 0.30f, 0.f, 1.f);
+	SnapshottedCadenceJitter = SafeValue(CadenceJitterFraction, 0.15f, 0.f, 0.95f);
 	SnapshottedProjectileClass = ProjectileClass;
 	const float RequestedInterval = AttackIntervalSeconds;
 	SnapshottedInterval = AttackIntervalSeconds;
@@ -58,6 +102,7 @@ void UBoidAttackComponent::BeginPlay()
 			&& FMath::IsFinite(SnapshottedProjectileLifespan) && SnapshottedProjectileLifespan > 0.f;
 	}
 	AttackFacts = FBoidAttackFacts();
+	AttackFacts.AssignedFanProbability = AssignedFanProbability;
 	AttackFacts.LastRejection = bConfigurationValid ? EBoidAttackRejection::ContextInactive : EBoidAttackRejection::InvalidConfiguration;
 	// Reapply after saved Blueprint defaults. The Combat task enables firing.
 	RefreshTickPrerequisites();
@@ -84,6 +129,7 @@ void UBoidAttackComponent::DeactivateCombatContext(uint64 OwnerToken)
 	CadenceTarget.Reset();
 	NextAttemptTime = 0.0;
 	AttackFacts = FBoidAttackFacts();
+	AttackFacts.AssignedFanProbability = AssignedFanProbability;
 	AttackFacts.LastRejection = EBoidAttackRejection::ContextInactive;
 }
 
@@ -149,6 +195,11 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		ResetCadence(EBoidAttackRejection::ContextInactive);
 		return;
 	}
+	if (!InitializeRandomState())
+	{
+		ResetCadence(EBoidAttackRejection::ContextInactive);
+		return;
+	}
 	AttackFacts.bContextActive = true;
 
 	const FBoidTargetFacts TargetFacts = Boid->GetTargetFacts();
@@ -160,7 +211,7 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	{
 		ResetCadence(EBoidAttackRejection::NotDue);
 		CadenceTarget = Target;
-		NextAttemptTime = Now + SnapshottedInterval;
+		NextAttemptTime = Now + BoidAttack::AttemptDelay(AttackRandom, SnapshottedInterval, SnapshottedCadenceJitter, true);
 	}
 	if (!bConfigurationValid || !TargetFacts.bHasSight) AttackFacts.bCommonEligible = false;
 	const FVector TargetCenter = Target->GetActorLocation();
@@ -186,9 +237,11 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		return;
 	}
 	// A failed opportunity is discarded. A hitch can never accumulate extra shots.
-	NextAttemptTime = Now + SnapshottedInterval;
+	const float Delay = BoidAttack::AttemptDelay(AttackRandom, SnapshottedInterval, SnapshottedCadenceJitter, false);
+	NextAttemptTime = Now + Delay;
 	AttackFacts.bAttemptDue = true;
-	AttackFacts.SecondsUntilAttempt = SnapshottedInterval;
+	AttackFacts.SecondsUntilAttempt = Delay;
+	AttackFacts.LaunchedProjectileCount = 0;
 	AttackFacts.bCommonEligible = false;
 	if (!SnapshottedProjectileClass) { AttackFacts.LastRejection = EBoidAttackRejection::NoProjectileClass; return; }
 	if (!bConfigurationValid) { AttackFacts.LastRejection = EBoidAttackRejection::InvalidConfiguration; return; }
@@ -211,7 +264,12 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		? Muzzle->GetComponentTransform() : Muzzle->GetSocketTransform(SnapshottedMuzzleSocketName, RTS_World);
 	if (!MuzzleTransform.IsValid()) { AttackFacts.LastRejection = EBoidAttackRejection::MuzzleInvalid; return; }
 	const FVector MuzzleLocation = MuzzleTransform.GetLocation();
-	const FVector Aim = (TargetCenter - MuzzleLocation).GetSafeNormal();
+	const FVector TargetVelocity = Target->GetVelocity();
+	const BoidAttack::FAimResult Prediction = BoidAttack::PredictAim(MuzzleLocation, TargetCenter, TargetVelocity,
+		SnapshottedProjectileSpeed, SnapshottedPredictionStrength, SnapshottedMaximumPredictionSeconds, SnapshottedProjectileLifespan);
+	const FVector Aim = Prediction.Direction;
+	AttackFacts.PredictedAimPoint = Prediction.Point;
+	AttackFacts.AppliedPredictionSeconds = Prediction.PredictionSeconds;
 	UWorld* World = GetWorld();
 	if (!World) { AttackFacts.LastRejection = EBoidAttackRejection::SpawnFailed; return; }
 	FCollisionQueryParams SightParams(SCENE_QUERY_STAT(BoidAttackFreshSight), true);
@@ -219,30 +277,68 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	SightParams.AddIgnoredActor(Target);
 	FHitResult SightHit;
 	const bool bFreshSight = !World->LineTraceSingleByChannel(SightHit, BoidCenter, TargetCenter, ECC_Visibility, SightParams);
-	if (!bFreshSight || Aim.IsNearlyZero() || !ValidateMuzzleAndLaunch(MuzzleLocation, Aim, Target))
+	if (!bFreshSight || Aim.IsNearlyZero())
 	{
 		AttackFacts.bCommonEligible = false;
 		AttackFacts.LastRejection = !bFreshSight ? EBoidAttackRejection::NoSight : EBoidAttackRejection::MuzzleBlocked;
 		return;
 	}
 
-	AttackFacts.bCommonEligible = true;
+	const bool bFan = BoidAttack::SelectFan(AttackRandom, bSnapshottedEnableFans, AssignedFanProbability,
+		CenterDistance, SnapshottedMinimumFanDistance);
+	AttackFacts.SelectedPattern = bFan ? EBoidAttackPattern::Fan : EBoidAttackPattern::Single;
+	const TArray<FVector> Directions = bFan
+		? BoidAttack::FanDirections(Aim, TargetVelocity, SnapshottedFanCount, SnapshottedFanAngle)
+		: TArray<FVector>{Aim};
+	const float Damage = bFan
+		? SnapshottedProjectileDamage * (SnapshottedFanDamageMultiplier / SnapshottedFanCount)
+		: SnapshottedProjectileDamage;
+	if (!FMath::IsFinite(Damage)) { AttackFacts.LastRejection = EBoidAttackRejection::InvalidConfiguration; return; }
 	const uint64 LaunchContext = ContextOwnerToken;
-	const FTransform SpawnTransform(Aim.Rotation(), MuzzleLocation);
-	AFlyingBoidAttackProjectile* Projectile = World->SpawnActorDeferred<AFlyingBoidAttackProjectile>(
-		SnapshottedProjectileClass, SpawnTransform, Boid, Boid->GetInstigator(), ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-	if (!Projectile || !Projectile->InitializeLaunch(Boid, Target, Aim, SnapshottedProjectileSpeed,
-		SnapshottedProjectileRadius, SnapshottedProjectileDamage, SnapshottedProjectileLifespan))
+	const auto CanContinue = [this, Boid, Target, LaunchContext]()
 	{
-		if (Projectile) Projectile->Destroy();
-		AttackFacts.LastRejection = EBoidAttackRejection::SpawnFailed;
-		return;
+		if (!IsValid(this) || !IsValid(Boid) || !Boid->IsAlive() || ContextOwnerToken != LaunchContext
+			|| !IsValid(Target) || !Target->IsAlive() || CadenceTarget.Get() != Target) return false;
+		const FBoidTargetFacts Facts = Boid->GetTargetFacts();
+		const FBoidMovementIntent CurrentIntent = Boid->GetMovementIntent();
+		return Facts.bDetected && Facts.bHasSight && Facts.TargetActor.Get() == Target && Boid->MovementTarget == Target
+			&& CurrentIntent.Policy == EBoidMovementPolicy::RangedOrbit && !CurrentIntent.bIsTransit
+			&& Boid->IsSteeringActive() && IsValid(Boid->GetSimulationRunner());
+	};
+	AttackFacts.bCommonEligible = false;
+	AttackFacts.LastRejection = EBoidAttackRejection::MuzzleBlocked;
+	for (const FVector& Direction : Directions)
+	{
+		if (!CanContinue()) return;
+		if (!ValidateMuzzleAndLaunch(MuzzleLocation, Direction, Target)) continue;
+		AttackFacts.bCommonEligible = true;
+		const FTransform SpawnTransform(Direction.Rotation(), MuzzleLocation);
+		AFlyingBoidAttackProjectile* Projectile = World->SpawnActorDeferred<AFlyingBoidAttackProjectile>(
+			SnapshottedProjectileClass, SpawnTransform, Boid, Boid->GetInstigator(), ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		// Spawn callbacks may have ended Combat before deferred initialization.
+		if (!CanContinue())
+		{
+			if (IsValid(Projectile)) Projectile->Destroy();
+			return;
+		}
+		if (!IsValid(Projectile) || !Projectile->InitializeLaunch(Boid, Target, Direction, SnapshottedProjectileSpeed,
+			SnapshottedProjectileRadius, Damage, SnapshottedProjectileLifespan))
+		{
+			if (IsValid(Projectile)) Projectile->Destroy();
+			AttackFacts.LastRejection = EBoidAttackRejection::SpawnFailed;
+			continue;
+		}
+		UGameplayStatics::FinishSpawningActor(Projectile, SpawnTransform);
+		// BeginPlay/presentation can kill the shooter or stop its StateTree.
+		if (!CanContinue()) return;
+		++AttackFacts.LaunchedProjectileCount;
+		AttackFacts.ShotCount = FMath::Min(AttackFacts.ShotCount, MAX_int32 - 1) + 1;
+		if (AttackFacts.LaunchedProjectileCount == 1)
+		{
+			AttackFacts.VolleyCount = FMath::Min(AttackFacts.VolleyCount, MAX_int32 - 1) + 1;
+		}
 	}
-	UGameplayStatics::FinishSpawningActor(Projectile, SpawnTransform);
-	// BeginPlay/presentation can kill the shooter or stop its StateTree.
-	if (!IsValid(Boid) || !Boid->IsAlive() || ContextOwnerToken != LaunchContext) return;
-	AttackFacts.ShotCount = FMath::Min(AttackFacts.ShotCount, MAX_int32 - 1) + 1;
-	AttackFacts.LastRejection = EBoidAttackRejection::None;
+	if (AttackFacts.LaunchedProjectileCount > 0) AttackFacts.LastRejection = EBoidAttackRejection::None;
 }
 
 void UBoidAttackComponent::RefreshTickPrerequisites()
