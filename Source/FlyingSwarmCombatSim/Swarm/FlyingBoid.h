@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Combat/BoidHealthTypes.h"
+#include "Combat/BoidAttackTypes.h"
 #include "Swarm/BoidIntentTypes.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
@@ -18,6 +19,7 @@ class USphereComponent;
 class UStaticMeshComponent;
 class UStateTreeComponent;
 class UBoidFlightMovementComponent;
+class UBoidAttackComponent;
 class UBoidSteeringProfile;
 struct FSwarmTuningSettings;
 
@@ -88,6 +90,8 @@ public:
 	FBoidTargetFacts GetTargetFacts() const { return TargetFacts; }
 	UFUNCTION(BlueprintPure, Category = "Boid|Positioning")
 	FBoidPositioningFacts GetPositioningFacts() const { return PositioningFacts; }
+	UFUNCTION(BlueprintPure, Category = "Boid|Attack")
+	FBoidAttackFacts GetAttackFacts() const;
 	bool RequestRangedPhase(EBoidRangedPhaseRequest Phase, uint64 OwnerToken, uint64 CombatToken);
 	void ReleaseRangedPhase(uint64 OwnerToken);
 	EBoidRangedPhaseRequest GetRequestedRangedPhase() const { return RequestedRangedPhase; }
@@ -131,6 +135,9 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Boid|Movement")
 	TObjectPtr<UBoidFlightMovementComponent> FlightMovement;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Boid|Attack")
+	TObjectPtr<UBoidAttackComponent> AttackComponent;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Boid|Movement", meta = (ClampMin = "0.0"))
 	float MaxSpeedCmPerSec = 500.0f;
