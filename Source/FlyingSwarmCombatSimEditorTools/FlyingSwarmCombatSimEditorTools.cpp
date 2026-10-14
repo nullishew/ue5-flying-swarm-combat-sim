@@ -2,7 +2,7 @@
 #include "UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
 #include "NavigationVisualizer.h"
-#include "NavigationWaypoint.h"
+#include "World_Navigation/NavigationWaypoint.h"
 #include "Misc/CoreDelegates.h"
 
 class FBoidEditorToolsModule : public IModuleInterface
