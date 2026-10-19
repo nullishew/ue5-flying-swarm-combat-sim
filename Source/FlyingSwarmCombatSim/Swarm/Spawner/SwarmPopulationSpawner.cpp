@@ -3,7 +3,8 @@
 
 #include "Swarm/Spawner/SwarmPopulationSpawner.h"
 #include "Swarm/FlyingBoid.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
+#include "Engine/World.h"
 #include "Components/SphereComponent.h"
 
 // Sets default values
@@ -28,7 +29,7 @@ ASwarmPopulationSpawner::ASwarmPopulationSpawner()
 void ASwarmPopulationSpawner::BeginPlay()
 {
 	Super::BeginPlay();
-	UE_LOG(LogTemp, Warning, TEXT("brehh why no workk sadge"))
+	UE_LOG(LogTemp, Verbose, TEXT("Swarm spawner beginning play."));
 	SpawnEnemy();
 }
 
@@ -42,7 +43,9 @@ void ASwarmPopulationSpawner::Tick(float DeltaTime)
 
 bool ASwarmPopulationSpawner::CanSpawnAtLocation(const FVector& Location, const float &Radius)
 {
-	if (SpawnBounds->GetScaledBoxExtent().GetMax() < Radius || !SwarmSimulationRunner->IsInsideSafeBounds(Location, Radius)) return false;
+	const auto* Simulation = GetWorld()->GetSubsystem<USwarmSimulationSubsystem>();
+    if (!Simulation || !Simulation->IsInsideSafeBounds(Location, Radius)
+        || SpawnBounds->GetScaledBoxExtent().GetMax() < Radius) return false;
 	const FCollisionShape Body = FCollisionShape::MakeSphere(Radius);
 	const FCollisionObjectQueryParams ObjectQueryParams(FCollisionObjectQueryParams::AllObjects);
 	if (GetWorld()->OverlapAnyTestByObjectType(Location, FQuat::Identity, ObjectQueryParams, Body)) return false;
@@ -51,7 +54,7 @@ bool ASwarmPopulationSpawner::CanSpawnAtLocation(const FVector& Location, const 
 
 AFlyingBoid* ASwarmPopulationSpawner::SpawnEnemy()
 {
-	if (!EnemyClass || !IsValid(SwarmSimulationRunner)) return nullptr;
+	if (!EnemyClass || !GetWorld()) return nullptr;
 
 	const AFlyingBoid* EnemyDefaults = EnemyClass->GetDefaultObject<AFlyingBoid>();
 	const float EnemyRadius = EnemyDefaults->CollisionSphere->GetScaledSphereRadius();
@@ -65,7 +68,6 @@ AFlyingBoid* ASwarmPopulationSpawner::SpawnEnemy()
 	AFlyingBoid* SpawnedEnemy = GetWorld()->SpawnActor<AFlyingBoid>(EnemyClass, Location, SpawnBounds->GetComponentRotation(), SpawnParams);
 	if (IsValid(SpawnedEnemy))
 	{
-		SwarmSimulationRunner->RegisterBoid(SpawnedEnemy);
 		UE_LOG(LogTemp, Warning, TEXT("Spawned boid"));
 	}
 	UE_LOG(LogTemp, Warning, TEXT("At least the spawn code made it here"));

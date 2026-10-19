@@ -8,14 +8,13 @@
 #include "SwarmPopulationSpawner.generated.h"
 
 class AFlyingBoid;
-class ASwarmSimulationRunner;
 
 UCLASS(BLUEPRINTABLE)
 class FLYINGSWARMCOMBATSIM_API ASwarmPopulationSpawner : public AActor
 {
 	GENERATED_BODY()
-	
-public:	
+
+public:
 	// Sets default values for this actor's properties
 	ASwarmPopulationSpawner();
 
@@ -31,21 +30,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawner")
 	TSubclassOf<AFlyingBoid> EnemyClass;
 
-
 	bool CanSpawnAtLocation(const FVector& Location, const float &Radius);
 
-
-
-
-
-	// spaghetti???
-	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Spawner")
-	TObjectPtr<ASwarmSimulationRunner> SwarmSimulationRunner;
-
-
-
-
-public:	
+public:
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
 

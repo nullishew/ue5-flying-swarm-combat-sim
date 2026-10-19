@@ -8,7 +8,7 @@
 
 class AFlyingBoidAttackProjectile;
 class USceneComponent;
-class ASwarmSimulationRunner;
+class USwarmSimulationSubsystem;
 
 /** Fires while enabled by the Combat StateTree task and ranged movement is active; never moves the boid or completes a StateTree state. */
 UCLASS(ClassGroup=(Boid), meta=(BlueprintSpawnableComponent))
@@ -45,6 +45,7 @@ public:
 	uint64 GetCombatContextOwner() const { return ContextOwnerToken; }
 	void DeactivateCombatContext(uint64 OwnerToken);
 	const FBoidAttackFacts& GetAttackFacts() const { return AttackFacts; }
+	void SuspendSimulation();
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -52,7 +53,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	virtual void EndPlay(EEndPlayReason::Type Reason) override;
 
 private:
 	UPROPERTY(Transient)
@@ -83,11 +84,14 @@ private:
 	bool bConfigurationValid = false;
 	uint64 ContextOwnerToken = 0;
 	TWeakObjectPtr<AActor> CadenceTarget;
-	TWeakObjectPtr<ASwarmSimulationRunner> TickRunner;
+	TWeakObjectPtr<USwarmSimulationSubsystem> SimulationSubscription;
+	FDelegateHandle SimulationHandle;
 	double NextAttemptTime = 0.0;
 
 	bool InitializeRandomState();
 	void ResetCadence(EBoidAttackRejection Reason);
-	void RefreshTickPrerequisites();
+	void RefreshSimulationSubscription();
+	void OnSimulationFrame(float DeltaTime);
+	void DetachSimulation();
 	bool ValidateMuzzleAndLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target) const;
 };

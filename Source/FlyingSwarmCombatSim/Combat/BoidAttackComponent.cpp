@@ -13,11 +13,11 @@
 #include "Player/FlyingCharacter.h"
 #include "Swarm/BoidIntentTypes.h"
 #include "Swarm/FlyingBoid.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 
 UBoidAttackComponent::UBoidAttackComponent()
 {
-	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bCanEverTick = false;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
 	PrimaryComponentTick.TickGroup = TG_PostPhysics;
 }
@@ -37,7 +37,7 @@ bool UBoidAttackComponent::InitializeRandomState()
 {
 	if (bRandomInitialized) return true;
 	AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
-	ASwarmSimulationRunner* Runner = IsValid(Boid) ? Boid->GetSimulationRunner() : nullptr;
+	USwarmSimulationSubsystem* Runner = IsValid(Boid) ? Boid->GetSimulationSubsystem() : nullptr;
 	if (!IsValid(Runner)) return false;
 	const int32 AgentId = Runner->GetAgentId(Boid);
 	if (AgentId == INDEX_NONE) return false;
@@ -105,8 +105,8 @@ void UBoidAttackComponent::BeginPlay()
 	AttackFacts.AssignedFanProbability = AssignedFanProbability;
 	AttackFacts.LastRejection = bConfigurationValid ? EBoidAttackRejection::ContextInactive : EBoidAttackRejection::InvalidConfiguration;
 	// Reapply after saved Blueprint defaults. The Combat task enables firing.
-	RefreshTickPrerequisites();
-	SetComponentTickEnabled(ContextOwnerToken != 0 && IsValid(OwnerBoid) && OwnerBoid->IsAlive());
+	RefreshSimulationSubscription();
+	SetComponentTickEnabled(false);
 }
 
 bool UBoidAttackComponent::ActivateCombatContext(uint64 OwnerToken)
@@ -116,8 +116,8 @@ bool UBoidAttackComponent::ActivateCombatContext(uint64 OwnerToken)
 	ContextOwnerToken = OwnerToken;
 	AttackFacts.bContextActive = true;
 	ResetCadence(EBoidAttackRejection::NoDetectedTarget);
-	RefreshTickPrerequisites();
-	SetComponentTickEnabled(true);
+	RefreshSimulationSubscription();
+	SetComponentTickEnabled(false);
 	return true;
 }
 
@@ -125,6 +125,7 @@ void UBoidAttackComponent::DeactivateCombatContext(uint64 OwnerToken)
 {
 	if (OwnerToken && ContextOwnerToken != OwnerToken) return;
 	ContextOwnerToken = 0;
+	DetachSimulation();
 	SetComponentTickEnabled(false);
 	CadenceTarget.Reset();
 	NextAttemptTime = 0.0;
@@ -170,9 +171,8 @@ bool UBoidAttackComponent::ValidateMuzzleAndLaunch(const FVector& MuzzleLocation
 	return true;
 }
 
-void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 {
-	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
 	if (!IsValid(Boid) || !Boid->IsAlive())
 	{
@@ -182,13 +182,14 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	}
 	if (!ContextOwnerToken)
 	{
+        DetachSimulation();
 		SetComponentTickEnabled(false);
 		return;
 	}
-	RefreshTickPrerequisites();
+	RefreshSimulationSubscription();
 	const FBoidMovementIntent Intent = Boid->GetMovementIntent();
 	if (Intent.Policy != EBoidMovementPolicy::RangedOrbit || Intent.bIsTransit
-		|| !Boid->IsSteeringActive() || !IsValid(Boid->GetSimulationRunner()))
+		|| !Boid->IsSteeringActive() || (!IsValid(Boid->GetSimulationSubsystem()) || !Boid->GetSimulationSubsystem()->IsAgentRegistered(Boid) || !Boid->GetSimulationSubsystem()->CanSimulate()))
 	{
 		// Retain task ownership until ExitState; only suspend firing here.
 		AttackFacts.bContextActive = false;
@@ -303,7 +304,7 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		const FBoidMovementIntent CurrentIntent = Boid->GetMovementIntent();
 		return Facts.bDetected && Facts.bHasSight && Facts.TargetActor.Get() == Target && Boid->MovementTarget == Target
 			&& CurrentIntent.Policy == EBoidMovementPolicy::RangedOrbit && !CurrentIntent.bIsTransit
-			&& Boid->IsSteeringActive() && IsValid(Boid->GetSimulationRunner());
+			&& Boid->IsSteeringActive() && IsValid(Boid->GetSimulationSubsystem()) && Boid->GetSimulationSubsystem()->IsAgentRegistered(Boid) && Boid->GetSimulationSubsystem()->CanSimulate();
 	};
 	AttackFacts.bCommonEligible = false;
 	AttackFacts.LastRejection = EBoidAttackRejection::MuzzleBlocked;
@@ -341,12 +342,34 @@ void UBoidAttackComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	if (AttackFacts.LaunchedProjectileCount > 0) AttackFacts.LastRejection = EBoidAttackRejection::None;
 }
 
-void UBoidAttackComponent::RefreshTickPrerequisites()
+void UBoidAttackComponent::RefreshSimulationSubscription()
 {
-	const AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
-	ASwarmSimulationRunner* Runner = Boid ? Boid->GetSimulationRunner() : nullptr;
-	if (TickRunner.Get() == Runner) return;
-	if (ASwarmSimulationRunner* Previous = TickRunner.Get()) RemoveTickPrerequisiteActor(Previous);
-	TickRunner = Runner;
-	if (Runner) AddTickPrerequisiteActor(Runner);
+    USwarmSimulationSubsystem* Simulation = ContextOwnerToken && GetWorld()
+        ? GetWorld()->GetSubsystem<USwarmSimulationSubsystem>() : nullptr;
+    if (SimulationSubscription.Get() == Simulation && SimulationHandle.IsValid()) return;
+    DetachSimulation();
+    if (Simulation)
+    {
+        SimulationSubscription = Simulation;
+        SimulationHandle = Simulation->OnPostSimulation.AddUObject(this, &UBoidAttackComponent::OnSimulationFrame);
+    }
+}
+
+void UBoidAttackComponent::DetachSimulation()
+{
+    if (auto* Simulation = SimulationSubscription.Get()) Simulation->OnPostSimulation.Remove(SimulationHandle);
+    SimulationSubscription.Reset();
+    SimulationHandle.Reset();
+}
+
+void UBoidAttackComponent::SuspendSimulation()
+{
+    AttackFacts.bContextActive = false;
+    ResetCadence(EBoidAttackRejection::ContextInactive);
+}
+
+void UBoidAttackComponent::EndPlay(EEndPlayReason::Type Reason)
+{
+    DeactivateCombatContext(0);
+    Super::EndPlay(Reason);
 }

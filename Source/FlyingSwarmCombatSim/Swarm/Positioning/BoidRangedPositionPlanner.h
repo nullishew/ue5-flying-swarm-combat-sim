@@ -4,7 +4,7 @@
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 
-class ASwarmSimulationRunner;
+class USwarmSimulationSubsystem;
 class AFlyingBoid;
 class AActor;
 
@@ -41,7 +41,7 @@ struct FBoidRangedSelection
 class FBoidRangedPositionPlanner
 {
 public:
-    void Update(ASwarmSimulationRunner& Runner, TConstArrayView<FBoidPlannerAgent> Agents, float DeltaTime);
+    void Update(USwarmSimulationSubsystem& Runner, TConstArrayView<FBoidPlannerAgent> Agents, float DeltaTime);
     const FBoidRangedSelection* FindSelection(int32 AgentId) const;
     void SetReservation(int32 AgentId, const FVector& Position);
     void RequestRefresh(int32 AgentId);
@@ -85,9 +85,9 @@ private:
         bool bForceRefresh = false;
         bool bExplicitRefresh = false;
     };
-    bool ValidateRangedPosition(ASwarmSimulationRunner& Runner, AFlyingBoid* Boid, const FVector& Goal,
+    bool ValidateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid, const FVector& Goal,
         const FVector& Center, AActor* Target, FString& Rejection) const;
-    float EvaluateRangedPosition(ASwarmSimulationRunner& Runner, AFlyingBoid* Boid, const FVector& Goal,
+    float EvaluateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid, const FVector& Goal,
         const FVector& Center, AActor* Target, const FBoidRangedSettings& Settings, float& Open, FString& Rejection) const;
     float ScorePosition(AFlyingBoid* Boid, const FVector& Goal, const FVector& Center, float Open,
         float TravelLength, const FBoidRangedSettings& Settings, float* OutSeedAffinity = nullptr) const;
@@ -96,6 +96,6 @@ private:
     TMap<int32, FSearchState> RuntimeByAgent;
     TMap<int32, FVector> Reservations;
     TArray<FBoidPlannerAgent> ActiveAgents;
-    ASwarmSimulationRunner* Host = nullptr;
+    USwarmSimulationSubsystem* Host = nullptr;
     int32 SearchCursor = 0;
 };

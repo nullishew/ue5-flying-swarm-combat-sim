@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 
-class ASwarmSimulationRunner;
+class USwarmSimulationSubsystem;
 class AFlyingBoid;
 class AActor;
 struct FNavigationGraphSnapshot;
@@ -12,21 +12,21 @@ struct FNavigationGraphSnapshot;
 class FBoidFlightRouteService
 {
 public:
-	uint64 Request(ASwarmSimulationRunner* Runner, AFlyingBoid* Boid, int32 AgentId, int32 GoalVersion,
+	uint64 Request(USwarmSimulationSubsystem* Runner, AFlyingBoid* Boid, int32 AgentId, int32 GoalVersion,
 		const FVector& Start, const FVector& Goal, AActor* IgnoreTarget);
 	const FBoidFlightRouteResult* FindResult(uint64 Handle) const;
 	void Cancel(uint64 Handle);
 	void ResetAgent(int32 AgentId);
-	void BeginFrame(ASwarmSimulationRunner* Runner, TConstArrayView<FBoidPlannerAgent> Agents);
-	void Tick(ASwarmSimulationRunner* Runner, TConstArrayView<FBoidPlannerAgent> Agents);
-	bool IsAllowedPosition(ASwarmSimulationRunner* Runner, const FVector& Position, float Radius) const;
-	bool IsAllowedSegment(ASwarmSimulationRunner* Runner, const FVector& Start, const FVector& Goal, float Radius) const;
+	void BeginFrame(USwarmSimulationSubsystem* Runner, TConstArrayView<FBoidPlannerAgent> Agents);
+	void Tick(USwarmSimulationSubsystem* Runner, TConstArrayView<FBoidPlannerAgent> Agents);
+	bool IsAllowedPosition(USwarmSimulationSubsystem* Runner, const FVector& Position, float Radius) const;
+	bool IsAllowedSegment(USwarmSimulationSubsystem* Runner, const FVector& Start, const FVector& Goal, float Radius) const;
 	const FString& GetConfigurationFailure() const { return ConfigurationFailure; }
 	uint32 GetGeneration() const { return GraphGeneration; }
-	FName GetRegion(ASwarmSimulationRunner* Runner, const FVector& Position, FName PreviousRegion = NAME_None) const;
+	FName GetRegion(USwarmSimulationSubsystem* Runner, const FVector& Position, FName PreviousRegion = NAME_None) const;
 	void InvalidateGraph();
-	bool FindTransitAnchor(ASwarmSimulationRunner* Runner, const FVector& LastKnownPoint, FName PreviousRegion, FVector& OutAnchor) const;
-	EBoidRouteStatus ValidateActiveSegment(ASwarmSimulationRunner* Runner, AFlyingBoid* Boid, const FVector& Start,
+	bool FindTransitAnchor(USwarmSimulationSubsystem* Runner, const FVector& LastKnownPoint, FName PreviousRegion, FVector& OutAnchor) const;
+	EBoidRouteStatus ValidateActiveSegment(USwarmSimulationSubsystem* Runner, AFlyingBoid* Boid, const FVector& Start,
 		const FVector& Goal, AActor* IgnoreTarget);
 
 private:
@@ -52,7 +52,7 @@ private:
 	bool bHasGeometryHash = false;
 	FString ConfigurationFailure;
 	FString LastLoggedConfigurationFailure;
-	bool ValidateSegment(ASwarmSimulationRunner& Runner, const FVector& A, const FVector& B, float Radius, const FRequestState& Request);
-	void RefreshGraph(ASwarmSimulationRunner* Runner);
-	void ProcessOne(ASwarmSimulationRunner& Runner, FRequestState& Request);
+	bool ValidateSegment(USwarmSimulationSubsystem& Runner, const FVector& A, const FVector& B, float Radius, const FRequestState& Request);
+	void RefreshGraph(USwarmSimulationSubsystem* Runner);
+	void ProcessOne(USwarmSimulationSubsystem& Runner, FRequestState& Request);
 };

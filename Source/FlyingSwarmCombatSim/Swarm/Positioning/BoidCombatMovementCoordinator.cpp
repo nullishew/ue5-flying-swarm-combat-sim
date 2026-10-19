@@ -8,7 +8,7 @@
 #include "Swarm/Steering/BoidSteeringProfile.h"
 #include "Swarm/FlyingBoid.h"
 #include "Player/FlyingCharacter.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "Components/SphereComponent.h"
 #include "Components/BoxComponent.h"
 #include "Engine/World.h"
@@ -35,7 +35,7 @@ namespace
 			? Settings.MinimumRangeCm : Settings.MaximumRangeCm;
 	}
 
-	float RetreatSpeed(const ASwarmSimulationRunner& Runner, const AFlyingBoid& Boid)
+	float RetreatSpeed(const USwarmSimulationSubsystem& Runner, const AFlyingBoid& Boid)
 	{
 		return FMath::Min(FMath::Max(0.f, Runner.Tuning.CruiseSpeedCmPerSec), FMath::Max(0.f, Boid.MaxSpeedCmPerSec));
 	}
@@ -66,17 +66,17 @@ namespace
 
 }
 
-bool FBoidCombatMovementCoordinator::HasBudget(const ASwarmSimulationRunner& Runner) const
+bool FBoidCombatMovementCoordinator::HasBudget(const USwarmSimulationSubsystem& Runner) const
 {
 	return Runner.LastFrameCombatControlQueries < FMath::Max(0, Runner.CombatControlQueriesPerFrame);
 }
 
-bool FBoidCombatMovementCoordinator::HasMovementBudget(const ASwarmSimulationRunner& Runner) const
+bool FBoidCombatMovementCoordinator::HasMovementBudget(const USwarmSimulationSubsystem& Runner) const
 {
 	return Runner.LastFrameCombatControlQueries < FMath::Max(0, Runner.CombatControlQueriesPerFrame - ReadinessReserve);
 }
 
-bool FBoidCombatMovementCoordinator::SweepClear(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid,
+bool FBoidCombatMovementCoordinator::SweepClear(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid,
 	AActor& Target, const FVector& Start, const FVector& End)
 {
 	const USphereComponent* Sphere = Boid.CollisionSphere;
@@ -96,7 +96,7 @@ bool FBoidCombatMovementCoordinator::SweepClear(ASwarmSimulationRunner& Runner, 
 		FCollisionShape::MakeSphere(Radius), Params, Responses);
 }
 
-bool FBoidCombatMovementCoordinator::FindSafeEscapeGoal(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid,
+bool FBoidCombatMovementCoordinator::FindSafeEscapeGoal(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid,
 	AActor& Target, const FVector& Center, float EscapeRange, TConstArrayView<FVector> Directions,
 	FVector& OutGoal, FVector& OutDirection, bool& bPendingBudget, int32& OutRejectedDirections)
 {
@@ -128,7 +128,7 @@ void FBoidCombatMovementCoordinator::RecordChange(FAgentState& State, const FStr
 	while (State.Facts.RecentChanges.Num() > 16) State.Facts.RecentChanges.RemoveAt(0, 1, EAllowShrinking::No);
 }
 
-void FBoidCombatMovementCoordinator::Publish(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid,
+void FBoidCombatMovementCoordinator::Publish(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid,
 	FAgentState& State, const FBoidRangedSelection* Selection, bool bReady)
 {
 	FBoidPositioningFacts Positioning;
@@ -182,7 +182,7 @@ void FBoidCombatMovementCoordinator::WarnIfHeld(const AFlyingBoid& Boid, FAgentS
 	}
 }
 
-void FBoidCombatMovementCoordinator::Update(ASwarmSimulationRunner& Runner,
+void FBoidCombatMovementCoordinator::Update(USwarmSimulationSubsystem& Runner,
 	TConstArrayView<FBoidPlannerAgent> Agents, FBoidRangedPositionPlanner& Planner, float DeltaTime)
 {
 	Runner.LastFrameCombatControlQueries = 0;
@@ -966,7 +966,7 @@ FBoidNavigationGoal FBoidCombatMovementCoordinator::GetNavigation(int32 AgentId,
 	return State->Navigation;
 }
 
-void FBoidCombatMovementCoordinator::FinalizeNavigation(ASwarmSimulationRunner& Runner,
+void FBoidCombatMovementCoordinator::FinalizeNavigation(USwarmSimulationSubsystem& Runner,
 	TConstArrayView<FBoidPlannerAgent> Agents, float DeltaTime)
 {
 	for (const FBoidPlannerAgent& Agent : Agents)
@@ -1008,7 +1008,7 @@ void FBoidCombatMovementCoordinator::FinalizeNavigation(ASwarmSimulationRunner& 
 	}
 }
 
-void FBoidCombatMovementCoordinator::ValidateReadinessForAgent(ASwarmSimulationRunner& Runner,
+void FBoidCombatMovementCoordinator::ValidateReadinessForAgent(USwarmSimulationSubsystem& Runner,
 	AFlyingBoid& Boid, FAgentState& State, float DeltaTime)
 {
 	const FBoidRangedSettings Settings = Runner.RangedSettings.Sanitized();
@@ -1063,7 +1063,7 @@ void FBoidCombatMovementCoordinator::ValidateReadinessForAgent(ASwarmSimulationR
 	Boid.PublishCombatMovement(State.Facts);
 }
 
-void FBoidCombatMovementCoordinator::ValidateReadinessAfterMovement(ASwarmSimulationRunner& Runner,
+void FBoidCombatMovementCoordinator::ValidateReadinessAfterMovement(USwarmSimulationSubsystem& Runner,
 	TConstArrayView<FBoidPlannerAgent> Agents, float DeltaTime)
 {
 	TArray<int32> Order;

@@ -4,7 +4,7 @@
 #include "Swarm/Steering/BoidPathFollowingSteeringBehavior.h"
 #include "Swarm/Steering/BoidSteeringProfile.h"
 #include "Swarm/FlyingBoid.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "StateTreeExecutionContext.h"
 
 namespace
@@ -34,7 +34,7 @@ EStateTreeRunStatus FBoidLocationGoalStateTreeTask::EnterState(FStateTreeExecuti
 	AFlyingBoid* Boid = Cast<AFlyingBoid>(Context.GetOwner());
 	FBoidLocationGoalTaskInstanceData& InstanceData = Context.GetInstanceData(*this);
 	InstanceData.bHasAppliedIntent = false;
-	ASwarmSimulationRunner* Runner = IsValid(Boid) ? Boid->GetSimulationRunner() : nullptr;
+	USwarmSimulationSubsystem* Runner = IsValid(Boid) ? Boid->GetSimulationSubsystem() : nullptr;
 	UBoidSteeringProfile* EffectiveProfile = IsValid(Runner)
 		? Runner->ResolveSteeringProfile(Boid, InstanceData.SteeringProfile)
 		: (IsValid(InstanceData.SteeringProfile) ? InstanceData.SteeringProfile.Get() : (IsValid(Boid) ? Boid->GetSteeringProfile() : nullptr));

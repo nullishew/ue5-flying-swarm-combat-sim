@@ -4,7 +4,7 @@
 #include "Swarm/Steering/BoidSteeringProfile.h"
 #include "Player/FlyingCharacter.h"
 #include "Swarm/FlyingBoid.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "StateTreeExecutionContext.h"
 
 // File-specific scope also isolates helpers in Unreal unity translation units.
@@ -52,7 +52,7 @@ EStateTreeRunStatus FBoidTargetSteeringStateTreeTask::EnterState(FStateTreeExecu
 	InstanceData.bHasAppliedIntent = false;
 	InstanceData.bDisabledSteeringAfterTargetLoss = false;
 	InstanceData.bLostOwnership = false;
-	ASwarmSimulationRunner* Runner = Boid->GetSimulationRunner();
+	USwarmSimulationSubsystem* Runner = Boid->GetSimulationSubsystem();
 	UBoidSteeringProfile* EffectiveProfile = IsValid(Runner)
 		? Runner->ResolveSteeringProfile(Boid, InstanceData.SteeringProfile)
 		: (IsValid(InstanceData.SteeringProfile) ? InstanceData.SteeringProfile.Get() : Boid->GetSteeringProfile());
