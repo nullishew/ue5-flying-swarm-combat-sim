@@ -33,7 +33,7 @@ AFlyingBoid::AFlyingBoid()
 	// Local separation owns boid spacing; their sweeps must not block one another.
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
-	CollisionSphere->SetGenerateOverlapEvents(false);
+	CollisionSphere->SetGenerateOverlapEvents(true);
 
 	FlightMovement = CreateDefaultSubobject<UBoidFlightMovementComponent>(TEXT("FlightMovement"));
 	FlightMovement->SetUpdatedComponent(CollisionSphere);
@@ -59,8 +59,19 @@ void AFlyingBoid::BeginPlay()
 	MaxHealth = FMath::IsFinite(MaxHealth) ? FMath::Max(1.0f, MaxHealth) : 1.0f;
 	CurrentHealth = MaxHealth;
 	bDead = false;
+	// Restore the same body invariants used by InitializeWander before any population
+	// notifications, even when a Blueprint serialized older collision defaults.
+	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	CollisionSphere->SetCollisionObjectType(ECC_Pawn);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
     if (IsValid(StateTree)) StateTree->SetStartLogicAutomatically(false);
     Super::BeginPlay();
+	// Restore overlap notifications after Blueprint defaults for population sensors.
+	CollisionSphere->SetGenerateOverlapEvents(true);
+	CollisionSphere->UpdateOverlaps();
     if (USwarmSimulationSubsystem* Simulation = GetWorld()->GetSubsystem<USwarmSimulationSubsystem>())
     {
         Simulation->RegisterBoid(this);
@@ -438,6 +449,7 @@ void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 	// Reapply invariants after Blueprint defaults have been loaded.
 	CollisionSphere->SetSimulatePhysics(false);
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	CollisionSphere->SetGenerateOverlapEvents(true);
 	CollisionSphere->SetCollisionObjectType(ECC_Pawn);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
