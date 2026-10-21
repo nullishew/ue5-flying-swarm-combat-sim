@@ -21,6 +21,8 @@ class UStateTreeComponent;
 class UBoidFlightMovementComponent;
 class UBoidAttackComponent;
 class UBoidSteeringProfile;
+class USoundBase;
+class USoundAttenuation;
 
 /** Public, reflected view of the boid's current player-sensing state. */
 USTRUCT(BlueprintType)
@@ -167,6 +169,16 @@ public:
 	float MaxHealth = 30.0f;
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Boid|Health", Transient)
 	float CurrentHealth = 30.0f;
+	/** Assign the same asset as the player's HitSound for identical hit feedback. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
+	TObjectPtr<USoundBase> HitSound;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio", meta = (ClampMin = "0", ClampMax = "2"))
+	float HitVolume = 0.7f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
+	TObjectPtr<USoundAttenuation> HitAttenuation;
+
 	UPROPERTY(BlueprintAssignable, Category = "Boid|Health")
 	FBoidHealthChangedDelegate OnHealthChanged;
 	UPROPERTY(BlueprintAssignable, Category = "Boid|Health")

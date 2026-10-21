@@ -19,4 +19,14 @@ public:
 
 	/** Constructor */
 	AFlyingSwarmCombatSimCameraManager();
+	void PlayHitShake(float Degrees, float Duration);
+
+protected:
+	virtual void ApplyCameraModifiers(float DeltaTime, FMinimalViewInfo& InOutPOV) override;
+
+private:
+	float HitShakeAge = 0.0f;
+	float HitShakeDegrees = 0.0f;
+	float HitShakeDuration = 0.18f;
+	bool bHitShakeActive = false;
 };

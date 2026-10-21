@@ -5,6 +5,7 @@
 #include "Player/FlyingSwarmCombatSimCameraManager.h"
 #include "Player/SpectatorPlayer.h"
 #include "UI/GameplayHUDWidget.h"
+#include "UI/HitFeedbackWidget.h"
 #include "Game/FlyingSwarmCombatSimGameMode.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -305,6 +306,24 @@ void AFlyingSwarmCombatSimPlayerController::PresentHUD()
 	if (RunHUD() && RunMode()) RunHUD()->UpdateRun(RunMode()->GetGameRunState(), RunMode()->GetRunStats());
 }
 
+void AFlyingSwarmCombatSimPlayerController::PlayHitFeedback()
+{
+	if (!IsLocalPlayerController()) return;
+	if (auto* CameraManager = Cast<AFlyingSwarmCombatSimCameraManager>(PlayerCameraManager)) CameraManager->PlayHitShake(ShakeDegrees, ShakeSeconds);
+	if (!HitVignetteMaterial) return;
+	if (!HitFeedbackWidget)
+	{
+		HitFeedbackWidget = CreateWidget<UHitFeedbackWidget>(this);
+		if (HitFeedbackWidget)
+		{
+			HitFeedbackWidget->Configure(HitVignetteMaterial, HitColor, VignetteOpacity, VignetteFadeInSeconds, VignetteFadeOutSeconds);
+			HitFeedbackWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+			HitFeedbackWidget->AddToPlayerScreen(9);
+		}
+	}
+	if (HitFeedbackWidget) HitFeedbackWidget->Pulse();
+}
+
 void AFlyingSwarmCombatSimPlayerController::CaptureDeathView()
 {
 	GetPlayerViewPoint(DeathLocation, DeathRotation);
@@ -421,6 +440,8 @@ void AFlyingSwarmCombatSimPlayerController::EndPlay(const EEndPlayReason::Type E
 	CombatHUDWidget = nullptr;
 	if (RunStatsWidget) RunStatsWidget->RemoveFromParent();
 	RunStatsWidget = nullptr;
+	if (HitFeedbackWidget) HitFeedbackWidget->RemoveFromParent();
+	HitFeedbackWidget = nullptr;
 	if (MobileControlsWidget) MobileControlsWidget->RemoveFromParent();
 	MobileControlsWidget = nullptr;
 	FallbackCamera = nullptr;

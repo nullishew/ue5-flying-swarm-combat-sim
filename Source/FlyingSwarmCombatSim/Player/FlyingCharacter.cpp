@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Player/FlyingCharacter.h"
+#include "Player/FlyingSwarmCombatSimPlayerController.h"
+#include "Sound/SoundBase.h"
 
 #include "Swarm/FlyingBoid.h"
 #include "Game/FlyingSwarmCombatSimGameMode.h"
@@ -91,6 +93,9 @@ float AFlyingCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Damag
 	{
 		return 0.0f;
 	}
+
+	if (IsLocallyControlled() && HitSound) UGameplayStatics::PlaySound2D(this, HitSound, HitVolume, 1.0f, 0.0f, nullptr, this, false);
+	if (auto* LocalController = Cast<AFlyingSwarmCombatSimPlayerController>(GetController())) LocalController->PlayHitFeedback();
 
 	const bool bJustDied = OldHealth > 0.0f && CurrentHealth <= 0.0f;
 	if (bJustDied)
@@ -279,6 +284,8 @@ void AFlyingCharacter::Fire()
 	TWeakObjectPtr<AFlyingSwarmCombatSimGameMode> Mode(GetWorld()->GetAuthGameMode<AFlyingSwarmCombatSimGameMode>());
 	const bool bRecordShot = Mode.IsValid() && Mode->IsRunPawn(this);
 	if (bRecordShot && !Mode->BeginShot(this)) return;
+
+	if (IsLocallyControlled() && PlayerShotSound) UGameplayStatics::PlaySound2D(this, PlayerShotSound, ShotVolume, 1.0f, 0.0f, nullptr, this, false);
 
 	float ActualDamage = 0.0f;
 	bool bKilled = false;
