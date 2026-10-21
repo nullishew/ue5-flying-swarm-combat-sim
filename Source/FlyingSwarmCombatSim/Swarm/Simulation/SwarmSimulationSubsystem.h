@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Swarm/Simulation/SwarmSimulationSettings.h"
+#include "Swarm/Simulation/SwarmSpatialIndex.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 #include "Templates/UniquePtr.h"
@@ -59,6 +60,19 @@ public:
 	bool CanSpawnBoid() const;
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Population")
 	int32 MaxPopulation = 67;
+	/** Per-frame work counts, summed over substeps; sample visits include self entries. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborCellsVisited = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborSamplesExamined = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborPairChecks = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborWallTraces = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameAcceptedNeighbors = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int32 LastFrameMovementSubsteps = 0;
 	UFUNCTION(BlueprintCallable, Category="Swarm")
 	void NotifySetupChanged();
 	/** Native attack callbacks; never used for boid movement. */
@@ -216,6 +230,9 @@ private:
 	TUniquePtr<FBoidCombatMovementCoordinator, FBoidCombatCoordinatorDeleter> CombatCoordinator;
 
 	TArray<FRegisteredAgent> Agents;
+	FSwarmSpatialIndex NeighborIndex;
+	TArray<FSwarmSpatialSample> NeighborSamples;
+	TArray<int32> NeighborCandidates;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingAdditions;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingRemovals;
 	int32 NextAgentId = 1;

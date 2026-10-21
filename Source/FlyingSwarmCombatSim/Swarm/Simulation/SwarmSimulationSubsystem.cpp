@@ -16,12 +16,16 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Swarm/FlyingBoid.h"
 #include "Player/FlyingCharacter.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarUseSpatialNeighbors(TEXT("swarm.UseSpatialNeighbors"), 1, TEXT("Use captured spatial neighbor queries for 32 or more snapshots. Set to 0 for exhaustive comparison."), ECVF_Default);
+
 	struct FBoidSnapshot
 	{
 		TWeakObjectPtr<AFlyingBoid> Boid;
@@ -474,6 +478,8 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	if (bFrameActive || bEndingPlay) return;
+	LastFrameNeighborCellsVisited = LastFrameNeighborSamplesExamined = LastFrameNeighborPairChecks = 0;
+	LastFrameNeighborWallTraces = LastFrameAcceptedNeighbors = LastFrameMovementSubsteps = 0;
 	bFrameActive = true;
 	ON_SCOPE_EXIT
 	{
@@ -564,59 +570,63 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 {
 	if (!CanSimulate()) return;
 	ApplyQueuedRegistrations();
+	++LastFrameMovementSubsteps;
 	TArray<FBoidSnapshot> Snapshots;
 	Snapshots.Reserve(Agents.Num());
-	for (const FRegisteredAgent& Agent : Agents)
 	{
-		AFlyingBoid* Boid = Agent.Boid.Get();
-		if (!Agent.bLogicStarted || !IsValid(Boid) || !Boid->IsAlive() || !IsAgentRegistered(Boid))
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSnapshotCapture);
+		for (const FRegisteredAgent& Agent : Agents)
 		{
-			continue;
-		}
-		if (Boid->IsSteeringActive())
-		{
-			Boid->ConstrainWanderToBounds(WanderBounds, Tuning.BoundsMarginCm);
-		}
-		if (!CanSimulate()) return;
-		if (!IsAgentRegistered(Boid)) continue;
-		FBoidSnapshot& Snapshot = Snapshots.AddDefaulted_GetRef();
-		Snapshot.Boid = Boid;
-		Snapshot.Position = Boid->GetActorLocation();
-		Snapshot.Velocity = Boid->GetFlightVelocity();
-		Snapshot.Heading = Boid->GetFlightHeading();
-		Snapshot.Radius = Boid->CollisionSphere->GetScaledSphereRadius();
-		Snapshot.Id = Agent.Id;
-		Snapshot.bSteeringActive = Boid->IsSteeringActive();
-		Snapshot.MovementIntent = Boid->GetMovementIntent();
-		Snapshot.Goal = Snapshot.MovementIntent.Goal;
-		Snapshot.bHasGoal = Snapshot.MovementIntent.bHasGoal;
-		if (IsValid(Boid->MovementTarget))
-		{
-			Snapshot.TargetPosition = Boid->MovementTarget->GetActorLocation();
-			Snapshot.TargetActor = Boid->MovementTarget;
-			const AFlyingCharacter* Player = Cast<AFlyingCharacter>(Boid->MovementTarget.Get());
-			const AFlyingBoid* TargetBoid = Cast<AFlyingBoid>(Boid->MovementTarget.Get());
-			Snapshot.bHasTarget = (!Player || Player->IsAlive()) && (!TargetBoid || TargetBoid->IsAlive());
-		}
-		Snapshot.bCoordinatedCombat = Snapshot.MovementIntent.Policy == EBoidMovementPolicy::RangedOrbit;
-		const bool UsesNavigation = Snapshot.bCoordinatedCombat
-			|| Snapshot.MovementIntent.bIsTransit
-			|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes
-				&& (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::FollowStandOff || Snapshot.MovementIntent.
-					Policy == EBoidMovementPolicy::LocationArrival));
-		if (UsesNavigation)
-		{
-			const FBoidNavigationGoal Navigation = GetNavigationGoal(Boid);
-			Snapshot.bPlannerControlled = true;
-			Snapshot.MovementIntent.Policy = EBoidMovementPolicy::LocationArrival;
-			Snapshot.Goal = Navigation.Goal;
-			Snapshot.bHasGoal = Navigation.bHasGoal;
-			Snapshot.bNavigationHold = Navigation.bHoldPosition;
-			Snapshot.bContinuousGoal = Navigation.bContinuousGoal;
-			Snapshot.bPreferNavigationGoal = Navigation.bPreferNavigationGoal;
-			Snapshot.NavigationPhase = Navigation.Phase;
-			Snapshot.OrbitContext = Navigation.OrbitContext;
-			Snapshot.DesiredSpeed = Navigation.DesiredSpeed;
+			AFlyingBoid* Boid = Agent.Boid.Get();
+			if (!Agent.bLogicStarted || !IsValid(Boid) || !Boid->IsAlive() || !IsAgentRegistered(Boid))
+			{
+				continue;
+			}
+			if (Boid->IsSteeringActive())
+			{
+				Boid->ConstrainWanderToBounds(WanderBounds, Tuning.BoundsMarginCm);
+			}
+			if (!CanSimulate()) return;
+			if (!IsAgentRegistered(Boid)) continue;
+			FBoidSnapshot& Snapshot = Snapshots.AddDefaulted_GetRef();
+			Snapshot.Boid = Boid;
+			Snapshot.Position = Boid->GetActorLocation();
+			Snapshot.Velocity = Boid->GetFlightVelocity();
+			Snapshot.Heading = Boid->GetFlightHeading();
+			Snapshot.Radius = Boid->CollisionSphere->GetScaledSphereRadius();
+			Snapshot.Id = Agent.Id;
+			Snapshot.bSteeringActive = Boid->IsSteeringActive();
+			Snapshot.MovementIntent = Boid->GetMovementIntent();
+			Snapshot.Goal = Snapshot.MovementIntent.Goal;
+			Snapshot.bHasGoal = Snapshot.MovementIntent.bHasGoal;
+			if (IsValid(Boid->MovementTarget))
+			{
+				Snapshot.TargetPosition = Boid->MovementTarget->GetActorLocation();
+				Snapshot.TargetActor = Boid->MovementTarget;
+				const AFlyingCharacter* Player = Cast<AFlyingCharacter>(Boid->MovementTarget.Get());
+				const AFlyingBoid* TargetBoid = Cast<AFlyingBoid>(Boid->MovementTarget.Get());
+				Snapshot.bHasTarget = (!Player || Player->IsAlive()) && (!TargetBoid || TargetBoid->IsAlive());
+			}
+			Snapshot.bCoordinatedCombat = Snapshot.MovementIntent.Policy == EBoidMovementPolicy::RangedOrbit;
+			const bool UsesNavigation = Snapshot.bCoordinatedCombat
+				|| Snapshot.MovementIntent.bIsTransit
+				|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes
+					&& (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::FollowStandOff || Snapshot.MovementIntent.
+						Policy == EBoidMovementPolicy::LocationArrival));
+			if (UsesNavigation)
+			{
+				const FBoidNavigationGoal Navigation = GetNavigationGoal(Boid);
+				Snapshot.bPlannerControlled = true;
+				Snapshot.MovementIntent.Policy = EBoidMovementPolicy::LocationArrival;
+				Snapshot.Goal = Navigation.Goal;
+				Snapshot.bHasGoal = Navigation.bHasGoal;
+				Snapshot.bNavigationHold = Navigation.bHoldPosition;
+				Snapshot.bContinuousGoal = Navigation.bContinuousGoal;
+				Snapshot.bPreferNavigationGoal = Navigation.bPreferNavigationGoal;
+				Snapshot.NavigationPhase = Navigation.Phase;
+				Snapshot.OrbitContext = Navigation.OrbitContext;
+				Snapshot.DesiredSpeed = Navigation.DesiredSpeed;
+			}
 		}
 	}
 
@@ -709,8 +719,26 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	const float NeighborRadius = FMath::Max(0.0f, Tuning.NeighborRadiusCm);
 	const float PredictionSeconds = FMath::Max(0.0f, Tuning.PredictedSeparationSeconds);
 	const float PredictionClearance = FMath::Max(0.0f, Tuning.PredictedSeparationClearanceCm);
+	double MaximumRadius = 0.0;
+	double MaximumSpeed = 0.0;
+	bool bFiniteEnvelopes = true;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSpatialIndexRebuild);
+		NeighborSamples.Reset(Snapshots.Num());
+		for (const FBoidSnapshot& Snapshot : Snapshots)
+		{
+			NeighborSamples.Add({Snapshot.Position, Snapshot.Id});
+			const double Speed = Snapshot.Velocity.Size();
+			bFiniteEnvelopes &= FMath::IsFinite(Speed) && FMath::IsFinite(Snapshot.Radius);
+			MaximumRadius = FMath::Max(MaximumRadius, static_cast<double>(Snapshot.Radius));
+			MaximumSpeed = FMath::Max(MaximumSpeed, Speed);
+		}
+		const bool bUseGrid = Snapshots.Num() >= 32 && CVarUseSpatialNeighbors.GetValueOnGameThread() != 0 && bFiniteEnvelopes;
+		NeighborIndex.Rebuild(NeighborSamples, Tuning.NeighborCellSizeCm, bUseGrid);
+	}
 	for (const FBoidSnapshot& Self : Snapshots)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSteeringEvaluation);
 		FSteeringOutput& Output = Outputs.AddDefaulted_GetRef();
 		if (!Self.bSteeringActive)
 		{
@@ -776,12 +804,23 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		bool bCloseApproach = false;
 		bool bOverlappingNeighbor = false;
 		TArray<const FBoidSnapshot*> VisibleNeighbors;
-		for (const FBoidSnapshot& Neighbor : Snapshots)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmNeighborGathering);
+			const double PhysicalEnvelope = Self.Radius + MaximumRadius + BoidFlight::ContactSkinCm;
+			const double SpacingEnvelope = FMath::Max3(static_cast<double>(SeparationRadius), PhysicalEnvelope, static_cast<double>(PredictionClearance));
+			const double QueryRadius = FMath::Max(static_cast<double>(NeighborRadius), SpacingEnvelope + (Self.Velocity.Size() + MaximumSpeed) * PredictionSeconds) + 1.0;
+			const FSwarmSpatialQueryStats Stats = NeighborIndex.QueryRadius(Self.Position, QueryRadius, NeighborCandidates);
+			LastFrameNeighborCellsVisited += Stats.CellsVisited;
+			LastFrameNeighborSamplesExamined += Stats.SamplesExamined;
+		}
+		for (const int32 NeighborIndexInSnapshot : NeighborCandidates)
+		{
+			const FBoidSnapshot& Neighbor = Snapshots[NeighborIndexInSnapshot];
 			if (Neighbor.Id == Self.Id)
 			{
 				continue;
 			}
+			++LastFrameNeighborPairChecks;
 			const FVector Offset = Self.Position - Neighbor.Position;
 			const float Distance = Offset.Size();
 			const float PhysicalClearance = Self.Radius + Neighbor.Radius + BoidFlight::ContactSkinCm;
@@ -790,11 +829,14 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			const float SearchRadius = FMath::Max(NeighborRadius,
 			                                      PairSeparationRadius + static_cast<float>(RelativeVelocity.Size()) *
 			                                      PredictionSeconds);
-			if (Distance > SearchRadius || HasWallBetween(GetWorld(), Self, Neighbor))
+			if (Distance > SearchRadius) continue;
+			++LastFrameNeighborWallTraces;
+			if (HasWallBetween(GetWorld(), Self, Neighbor))
 			{
 				continue;
 			}
 			VisibleNeighbors.Add(&Neighbor);
+			++LastFrameAcceptedNeighbors;
 			const FVector Away = Distance > UE_SMALL_NUMBER
 				                     ? Offset / Distance
 				                     : OverlapSeparationDirection(Self.Id, Neighbor.Id);
@@ -1029,6 +1071,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	const AFlyingBoid* Selected = IsValid(DebugBoid) ? DebugBoid.Get() : TestBoid.Get();
 	for (int32 Index = 0; Index < Snapshots.Num(); ++Index)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmMovementCommit);
 		AFlyingBoid* Boid = Snapshots[Index].Boid.Get();
 		if (!IsValid(Boid) || !Boid->IsAlive() || !Boid->IsSteeringActive()
 			|| !IsAgentRegistered(Boid) || !CanSimulate() || !Outputs[Index].bSteeringActive)
