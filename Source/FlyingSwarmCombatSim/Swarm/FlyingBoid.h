@@ -13,7 +13,7 @@
 #include "FlyingBoid.generated.h"
 
 class AFlyingCharacter;
-class ASwarmSimulationRunner;
+class USwarmSimulationSubsystem;
 class UBoxComponent;
 class USphereComponent;
 class UStaticMeshComponent;
@@ -21,7 +21,6 @@ class UStateTreeComponent;
 class UBoidFlightMovementComponent;
 class UBoidAttackComponent;
 class UBoidSteeringProfile;
-struct FSwarmTuningSettings;
 
 /** Public, reflected view of the boid's current player-sensing state. */
 USTRUCT(BlueprintType)
@@ -48,7 +47,7 @@ struct FLYINGSWARMCOMBATSIM_API FBoidTargetFacts
 	bool bAttackReady = false;
 };
 
-/** Physical flying agent. StateTree selects intent; the runner owns movement. */
+/** Physical flying agent. StateTree selects intent; the world simulation subsystem owns movement. */
 UCLASS()
 class FLYINGSWARMCOMBATSIM_API AFlyingBoid : public AActor
 {
@@ -118,9 +117,8 @@ public:
 	UFUNCTION(BlueprintSetter)
 	void SetMovementTargetFromBlueprint(AActor* Target) { SetMovementTarget(Target, 0); }
 	uint64 GetMovementTargetOwner() const { return MovementTargetOwnerToken; }
-	ASwarmSimulationRunner* GetSimulationRunner() const;
-	bool AssociateSimulationRunner(ASwarmSimulationRunner* Runner);
-	void ClearSimulationRunner(ASwarmSimulationRunner* Runner);
+	UFUNCTION(BlueprintPure, Category="Boid|Simulation")
+	USwarmSimulationSubsystem* GetSimulationSubsystem() const;
 
 	FVector GetFlightVelocity() const { return Velocity; }
 
@@ -175,6 +173,9 @@ public:
 	FBoidDeathDelegate OnDeath;
 
 private:
+    friend class USwarmSimulationSubsystem;
+    bool AssociateSimulationSubsystem(USwarmSimulationSubsystem* Simulation);
+    void ClearSimulationSubsystem(USwarmSimulationSubsystem* Simulation);
 	EBoidRangedPhaseRequest RequestedRangedPhase = EBoidRangedPhaseRequest::Approach;
 	uint64 RangedPhaseOwner = 0;
 	FVector Velocity = FVector::ZeroVector;
@@ -194,7 +195,7 @@ private:
 	TObjectPtr<UBoidSteeringProfile> RuntimeProfile;
 	TArray<FBoidSteeringRuntimeState> SteeringRuntimeStates;
 	TWeakObjectPtr<AFlyingCharacter> SensedTarget;
-	TWeakObjectPtr<ASwarmSimulationRunner> SimulationRunner;
+	TWeakObjectPtr<USwarmSimulationSubsystem> SimulationSubsystem;
 	FBoidMovementIntent MovementIntent;
 	FBoidPositioningFacts PositioningFacts;
 	uint64 MovementIntentOwnerToken = 0;

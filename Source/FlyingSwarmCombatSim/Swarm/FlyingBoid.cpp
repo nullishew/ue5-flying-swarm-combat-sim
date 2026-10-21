@@ -16,7 +16,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/Crc.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/ConstructorHelpers.h"
@@ -33,7 +33,7 @@ AFlyingBoid::AFlyingBoid()
 	// Local separation owns boid spacing; their sweeps must not block one another.
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
-	CollisionSphere->SetGenerateOverlapEvents(false);
+	CollisionSphere->SetGenerateOverlapEvents(true);
 
 	FlightMovement = CreateDefaultSubobject<UBoidFlightMovementComponent>(TEXT("FlightMovement"));
 	FlightMovement->SetUpdatedComponent(CollisionSphere);
@@ -59,16 +59,32 @@ void AFlyingBoid::BeginPlay()
 	MaxHealth = FMath::IsFinite(MaxHealth) ? FMath::Max(1.0f, MaxHealth) : 1.0f;
 	CurrentHealth = MaxHealth;
 	bDead = false;
-	Super::BeginPlay();
+	// Restore the same body invariants used by InitializeWander before any population
+	// notifications, even when a Blueprint serialized older collision defaults.
+	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	CollisionSphere->SetCollisionObjectType(ECC_Pawn);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
+    if (IsValid(StateTree)) StateTree->SetStartLogicAutomatically(false);
+    Super::BeginPlay();
+	// Restore overlap notifications after Blueprint defaults for population sensors.
+	CollisionSphere->SetGenerateOverlapEvents(true);
+	CollisionSphere->UpdateOverlaps();
+    if (USwarmSimulationSubsystem* Simulation = GetWorld()->GetSubsystem<USwarmSimulationSubsystem>())
+    {
+        Simulation->RegisterBoid(this);
+    }
 }
 
 void AFlyingBoid::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	GetWorldTimerManager().ClearTimer(DeathVisualTimer);
-	if (ASwarmSimulationRunner* Runner = SimulationRunner.Get())
+	if (USwarmSimulationSubsystem* Simulation = SimulationSubsystem.Get())
 	{
-		Runner->UnregisterBoid(this);
-		ClearSimulationRunner(Runner);
+		Simulation->UnregisterBoid(this);
+		ClearSimulationSubsystem(Simulation);
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -155,9 +171,9 @@ void AFlyingBoid::HandleDeath()
 	{
 		StateTree->StopLogic(TEXT("Boid died"));
 	}
-	if (ASwarmSimulationRunner* Runner = SimulationRunner.Get())
+	if (USwarmSimulationSubsystem* Simulation = SimulationSubsystem.Get())
 	{
-		Runner->UnregisterBoid(this);
+		Simulation->UnregisterBoid(this);
 	}
 }
 
@@ -328,30 +344,30 @@ void AFlyingBoid::SetMovementTarget(AActor* Target, uint64 OwnerToken)
 	MovementTargetOwnerToken = OwnerToken;
 }
 
-bool AFlyingBoid::AssociateSimulationRunner(ASwarmSimulationRunner* Runner)
+bool AFlyingBoid::AssociateSimulationSubsystem(USwarmSimulationSubsystem* Simulation)
 {
-	if (bDead || !IsValid(Runner))
+	if (bDead || !IsValid(Simulation) || Simulation->GetWorld() != GetWorld())
 	{
 		return false;
 	}
-	if (ASwarmSimulationRunner* ExistingRunner = SimulationRunner.Get(); ExistingRunner && ExistingRunner != Runner)
+	if (USwarmSimulationSubsystem* ExistingSimulation = SimulationSubsystem.Get(); ExistingSimulation && ExistingSimulation != Simulation)
 	{
 		return false;
 	}
-	SimulationRunner = Runner;
+	SimulationSubsystem = Simulation;
 	return true;
 }
 
-ASwarmSimulationRunner* AFlyingBoid::GetSimulationRunner() const
+USwarmSimulationSubsystem* AFlyingBoid::GetSimulationSubsystem() const
 {
-	return SimulationRunner.Get();
+	return SimulationSubsystem.Get();
 }
 
-void AFlyingBoid::ClearSimulationRunner(ASwarmSimulationRunner* Runner)
+void AFlyingBoid::ClearSimulationSubsystem(USwarmSimulationSubsystem* Simulation)
 {
-	if (SimulationRunner.Get() == Runner)
+	if (SimulationSubsystem.Get() == Simulation)
 	{
-		SimulationRunner.Reset();
+		SimulationSubsystem.Reset();
 	}
 }
 
@@ -433,6 +449,7 @@ void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 	// Reapply invariants after Blueprint defaults have been loaded.
 	CollisionSphere->SetSimulatePhysics(false);
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	CollisionSphere->SetGenerateOverlapEvents(true);
 	CollisionSphere->SetCollisionObjectType(ECC_Pawn);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
@@ -565,10 +582,10 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	const FVector Start = GetActorLocation();
 	const FVector Delta = BoidFlight::ClampPosition(Start + Velocity * DeltaTime, Transform, Extent) - Start;
 	// Authored flight space constrains actual movement as well as route planning.
-	ASwarmSimulationRunner* Runner = GetSimulationRunner();
-	const bool bAuthoredSpace = IsValid(Runner) && Runner->NavigationMode == EBoidNavigationMode::AuthoredRoutes;
-	if (bAuthoredSpace && !Runner->IsAllowedFlightSegment(Start, Start + Delta,
-		CollisionSphere->GetScaledSphereRadius() + FMath::Max(0.f, Runner->Tuning.ObstacleMarginCm)))
+	USwarmSimulationSubsystem* Simulation = GetSimulationSubsystem();
+	const bool bAuthoredSpace = IsValid(Simulation) && Simulation->NavigationMode == EBoidNavigationMode::AuthoredRoutes;
+	if (bAuthoredSpace && !Simulation->IsAllowedFlightSegment(Start, Start + Delta,
+		CollisionSphere->GetScaledSphereRadius() + FMath::Max(0.f, Simulation->Tuning.ObstacleMarginCm)))
 	{
 		Velocity = FVector::ZeroVector;
 		return;

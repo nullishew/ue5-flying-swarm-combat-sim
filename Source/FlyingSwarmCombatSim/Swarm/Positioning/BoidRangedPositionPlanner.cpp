@@ -1,6 +1,6 @@
 #include "Swarm/Positioning/BoidRangedPositionPlanner.h"
 
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "Swarm/Flight/BoidFlightAlgorithms.h"
 #include "Swarm/Routing/BoidFlightRouteService.h"
 #include "Swarm/BoidIntentTypes.h"
@@ -24,7 +24,7 @@ namespace
 	}
 }
 
-bool FBoidRangedPositionPlanner::ValidateRangedPosition(ASwarmSimulationRunner& Runner, AFlyingBoid* Boid,
+bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid,
 	const FVector& Goal, const FVector& Center, AActor* Target, FString& Rejection) const
 {
 	const USphereComponent* Sphere = Boid ? Boid->CollisionSphere : nullptr;
@@ -61,7 +61,7 @@ bool FBoidRangedPositionPlanner::ValidateRangedPosition(ASwarmSimulationRunner& 
 	return true;
 }
 
-float FBoidRangedPositionPlanner::EvaluateRangedPosition(ASwarmSimulationRunner& Runner, AFlyingBoid* Boid,
+float FBoidRangedPositionPlanner::EvaluateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid,
 	const FVector& Goal, const FVector& Center, AActor* Target, const FBoidRangedSettings& Settings,
 	float& Open, FString& Rejection) const
 {
@@ -168,7 +168,7 @@ void FBoidRangedPositionPlanner::CancelSearch(FSearchState& State)
 	State.bSearchActive = false;
 }
 
-void FBoidRangedPositionPlanner::Update(ASwarmSimulationRunner& Runner,
+void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 	TConstArrayView<FBoidPlannerAgent> Agents, float DeltaTime)
 {
 	Host = &Runner;

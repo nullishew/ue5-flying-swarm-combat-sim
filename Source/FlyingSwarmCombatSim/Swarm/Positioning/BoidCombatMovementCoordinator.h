@@ -6,7 +6,7 @@
 
 class AActor;
 class AFlyingBoid;
-class ASwarmSimulationRunner;
+class USwarmSimulationSubsystem;
 class FBoidRangedPositionPlanner;
 struct FBoidPlannerAgent;
 struct FBoidRangedSelection;
@@ -15,12 +15,12 @@ struct FBoidRangedSelection;
 class FBoidCombatMovementCoordinator
 {
 public:
-	void Update(ASwarmSimulationRunner& Runner, TConstArrayView<FBoidPlannerAgent> Agents,
+	void Update(USwarmSimulationSubsystem& Runner, TConstArrayView<FBoidPlannerAgent> Agents,
 		FBoidRangedPositionPlanner& Planner, float DeltaTime);
 	FBoidNavigationGoal GetNavigation(int32 AgentId, const AActor* Target) const;
-	void FinalizeNavigation(ASwarmSimulationRunner& Runner, TConstArrayView<FBoidPlannerAgent> Agents,
+	void FinalizeNavigation(USwarmSimulationSubsystem& Runner, TConstArrayView<FBoidPlannerAgent> Agents,
 		float DeltaTime);
-	void ValidateReadinessAfterMovement(ASwarmSimulationRunner& Runner,
+	void ValidateReadinessAfterMovement(USwarmSimulationSubsystem& Runner,
 		TConstArrayView<FBoidPlannerAgent> Agents, float DeltaTime);
 	void ResetAgent(int32 AgentId);
 	void ResetPosition(int32 AgentId);
@@ -68,16 +68,16 @@ private:
 		uint32 ControlSignature = 0;
 	};
 
-	bool HasBudget(const ASwarmSimulationRunner& Runner) const;
-	bool HasMovementBudget(const ASwarmSimulationRunner& Runner) const;
-	bool SweepClear(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid, AActor& Target,
+	bool HasBudget(const USwarmSimulationSubsystem& Runner) const;
+	bool HasMovementBudget(const USwarmSimulationSubsystem& Runner) const;
+	bool SweepClear(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid, AActor& Target,
 		const FVector& Start, const FVector& End);
-	bool FindSafeEscapeGoal(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid, AActor& Target,
+	bool FindSafeEscapeGoal(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid, AActor& Target,
 		const FVector& Center, float EscapeRange, TConstArrayView<FVector> Directions,
 		FVector& OutGoal, FVector& OutDirection, bool& bPendingBudget, int32& OutRejectedDirections);
-	void Publish(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid, FAgentState& State,
+	void Publish(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid, FAgentState& State,
 		const FBoidRangedSelection* Selection, bool bReady);
-	void ValidateReadinessForAgent(ASwarmSimulationRunner& Runner, AFlyingBoid& Boid,
+	void ValidateReadinessForAgent(USwarmSimulationSubsystem& Runner, AFlyingBoid& Boid,
 		FAgentState& State, float DeltaTime);
 	void RecordChange(FAgentState& State, const FString& Message);
 	void WarnIfHeld(const AFlyingBoid& Boid, FAgentState& State, bool bHeld, float DeltaTime);

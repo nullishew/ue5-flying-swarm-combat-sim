@@ -1,5 +1,5 @@
 #include "Swarm/Routing/BoidFlightRouteService.h"
-#include "Swarm/SwarmSimulationRunner.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "Swarm/FlyingBoid.h"
 #include "World_Navigation/RoomArea.h"
 #include "World_Navigation/NavigationGraphAsset.h"
@@ -34,7 +34,7 @@ struct FBoidFlightRouteService::FRequestState
 	int32 CurrentNode = INDEX_NONE, ArcCursor = 0;
 };
 
-void FBoidFlightRouteService::RefreshGraph(ASwarmSimulationRunner* Runner)
+void FBoidFlightRouteService::RefreshGraph(USwarmSimulationSubsystem* Runner)
 {
 	if (!Runner || !Runner->GetWorld()) return;
 	auto* Navigation = Runner->GetWorld()->GetSubsystem<UWorldNavigationSubsystem>();
@@ -89,7 +89,7 @@ void FBoidFlightRouteService::RefreshGraph(ASwarmSimulationRunner* Runner)
 	}
 }
 
-uint64 FBoidFlightRouteService::Request(ASwarmSimulationRunner* Runner, AFlyingBoid* Boid, int32 AgentId, int32 GoalVersion,
+uint64 FBoidFlightRouteService::Request(USwarmSimulationSubsystem* Runner, AFlyingBoid* Boid, int32 AgentId, int32 GoalVersion,
 	const FVector& Start, const FVector& Goal, AActor* IgnoreTarget)
 {
 	if (!Runner || !Boid) return 0;
@@ -135,7 +135,7 @@ void FBoidFlightRouteService::InvalidateGraph()
 	}
 }
 
-void FBoidFlightRouteService::BeginFrame(ASwarmSimulationRunner* Runner, TConstArrayView<FBoidPlannerAgent> Agents)
+void FBoidFlightRouteService::BeginFrame(USwarmSimulationSubsystem* Runner, TConstArrayView<FBoidPlannerAgent> Agents)
 {
 	CurrentAgents.Reset(); for (const auto& Agent : Agents) CurrentAgents.Add(Agent);
 	RefreshGraph(Runner);
@@ -149,7 +149,7 @@ void FBoidFlightRouteService::BeginFrame(ASwarmSimulationRunner* Runner, TConstA
 	if (Runner) Runner->LastFrameRouteQueries = Runner->LastFrameRouteExpansions = 0;
 }
 
-FName FBoidFlightRouteService::GetRegion(ASwarmSimulationRunner* Runner, const FVector& Position, FName PreviousRegion) const
+FName FBoidFlightRouteService::GetRegion(USwarmSimulationSubsystem* Runner, const FVector& Position, FName PreviousRegion) const
 {
 	(void)PreviousRegion;
 	if (Runner && Runner->GetWorld()) if (auto* Navigation = Runner->GetWorld()->GetSubsystem<UWorldNavigationSubsystem>())
@@ -157,18 +157,18 @@ FName FBoidFlightRouteService::GetRegion(ASwarmSimulationRunner* Runner, const F
 	return NAME_None;
 }
 
-bool FBoidFlightRouteService::IsAllowedPosition(ASwarmSimulationRunner* Runner, const FVector& Position, float Radius) const
+bool FBoidFlightRouteService::IsAllowedPosition(USwarmSimulationSubsystem* Runner, const FVector& Position, float Radius) const
 {
 	return Runner && FMath::IsFinite(Radius) && Radius >= 0.f && !Position.ContainsNaN() && Runner->IsInsideSafeBounds(Position, Radius);
 }
 
-bool FBoidFlightRouteService::IsAllowedSegment(ASwarmSimulationRunner* Runner, const FVector& A, const FVector& B, float Radius) const
+bool FBoidFlightRouteService::IsAllowedSegment(USwarmSimulationSubsystem* Runner, const FVector& A, const FVector& B, float Radius) const
 {
 	// The outer box is convex. Collision checks belong to ValidateSegment and swept movement.
 	return IsAllowedPosition(Runner, A, Radius) && IsAllowedPosition(Runner, B, Radius);
 }
 
-bool FBoidFlightRouteService::ValidateSegment(ASwarmSimulationRunner& Runner, const FVector& A, const FVector& B, float Radius, const FRequestState& Request)
+bool FBoidFlightRouteService::ValidateSegment(USwarmSimulationSubsystem& Runner, const FVector& A, const FVector& B, float Radius, const FRequestState& Request)
 {
 	if ((bValidatingActiveSegment && ActiveQueriesLeft <= 0) || (!bValidatingActiveSegment && SearchQueriesLeft <= RequestQueryFloor)) return false;
 	if (!IsAllowedSegment(&Runner, A, B, Radius)) return false;
@@ -185,7 +185,7 @@ bool FBoidFlightRouteService::ValidateSegment(ASwarmSimulationRunner& Runner, co
 	return !Runner.GetWorld()->SweepSingleByChannel(Hit, A, B, FQuat::Identity, Boid->CollisionSphere->GetCollisionObjectType(), Shape, Params, Responses);
 }
 
-void FBoidFlightRouteService::ProcessOne(ASwarmSimulationRunner& Runner, FRequestState& R)
+void FBoidFlightRouteService::ProcessOne(USwarmSimulationSubsystem& Runner, FRequestState& R)
 {
 	FBoidFlightRouteResult* Result = Results.Find(R.Handle); if (!Result || R.bFinished) return;
 	auto Finish = [&](EBoidRouteStatus Status, EBoidRouteTier Tier, TArray<FVector> Points, const TCHAR* Why)
@@ -276,7 +276,7 @@ void FBoidFlightRouteService::ProcessOne(ASwarmSimulationRunner& Runner, FReques
 	Finish(EBoidRouteStatus::Failed, EBoidRouteTier::None, {}, TEXT("No clear connection through the authored waypoint graph."));
 }
 
-void FBoidFlightRouteService::Tick(ASwarmSimulationRunner* Runner, TConstArrayView<FBoidPlannerAgent>)
+void FBoidFlightRouteService::Tick(USwarmSimulationSubsystem* Runner, TConstArrayView<FBoidPlannerAgent>)
 {
 	if (!Runner || Queue.IsEmpty()) return;
 	int32 Stalled = 0;
@@ -297,13 +297,13 @@ void FBoidFlightRouteService::Tick(ASwarmSimulationRunner* Runner, TConstArrayVi
 	}
 }
 
-bool FBoidFlightRouteService::FindTransitAnchor(ASwarmSimulationRunner*, const FVector&, FName, FVector&) const
+bool FBoidFlightRouteService::FindTransitAnchor(USwarmSimulationSubsystem*, const FVector&, FName, FVector&) const
 {
 	// Compatibility API only. Pursuit must retain the actual remembered destination.
 	return false;
 }
 
-EBoidRouteStatus FBoidFlightRouteService::ValidateActiveSegment(ASwarmSimulationRunner* Runner, AFlyingBoid* Boid,
+EBoidRouteStatus FBoidFlightRouteService::ValidateActiveSegment(USwarmSimulationSubsystem* Runner, AFlyingBoid* Boid,
 	const FVector& Start, const FVector& Goal, AActor* IgnoreTarget)
 {
 	if (!Runner || !Boid) return EBoidRouteStatus::Failed;
