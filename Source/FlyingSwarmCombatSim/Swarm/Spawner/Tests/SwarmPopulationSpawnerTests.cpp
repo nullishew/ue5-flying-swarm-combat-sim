@@ -4,6 +4,7 @@
 #include "Swarm/Spawner/SwarmPopulationSpawner.h"
 #include "Swarm/Spawner/SwarmSpawnVolume.h"
 #include "Swarm/Simulation/SwarmSimulationBounds.h"
+#include "Swarm/Simulation/SwarmSimulationSettings.h"
 #include "Swarm/FlyingBoid.h"
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
@@ -225,6 +226,20 @@ bool FSwarmPopulationRetryTimingTest::RunTest(const FString& Parameters)
 	Sensor->SpawnVolumes.Add(Volume);
 	Volume->Destroy();
 	TestNull(TEXT("Destroyed volume references are ignored"), Sensor->SpawnEnemy());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSwarmPopulationGlobalCapTest, "FlyingSwarm.Spawner.GlobalPopulationCap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSwarmPopulationGlobalCapTest::RunTest(const FString& Parameters)
+{
+	TGuardValue<int32> CapGuard(GetMutableDefault<USwarmSimulationSettings>()->MaxPopulation, 1);
+	FSpawnerTestWorld Fixture;
+	ASwarmPopulationSpawner* Sensor = Fixture.Spawner(3);
+	Fixture.Start();
+	TestNotNull(TEXT("Spawn below the global cap succeeds"), Sensor->SpawnEnemy());
+	TestNull(TEXT("Global cap blocks spawning before the local quota is reached"), Sensor->SpawnEnemy());
 	return true;
 }
 

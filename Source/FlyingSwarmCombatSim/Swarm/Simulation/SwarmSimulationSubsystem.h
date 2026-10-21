@@ -55,6 +55,10 @@ public:
 	bool IsAgentRegistered(const AFlyingBoid* Boid) const;
 	UFUNCTION(BlueprintPure, Category="Swarm")
 	bool CanSimulate() const;
+	/** Spawn-time admission only; counts living enemies even outside population sensors or before registration. */
+	bool CanSpawnBoid() const;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Population")
+	int32 MaxPopulation = 67;
 	UFUNCTION(BlueprintCallable, Category="Swarm")
 	void NotifySetupChanged();
 	/** Native attack callbacks; never used for boid movement. */
