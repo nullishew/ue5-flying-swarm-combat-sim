@@ -22,7 +22,7 @@ public class FlyingSwarmCombatSim : ModuleRules
 			"Slate"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] { "SlateCore" });
 
 		// Feature-qualified headers resolve from the module root, including editor consumers.
 		PublicIncludePaths.Add(ModuleDirectory);

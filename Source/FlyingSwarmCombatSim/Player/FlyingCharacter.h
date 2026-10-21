@@ -139,6 +139,7 @@ protected:
 	float TimeSinceViewRotationChanged = 0.0f;
 	bool bControlRotationInitialized = false;
 	bool bIsProcessingDamage = false;
+	bool bIsFiringRunShot = false;
 
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);

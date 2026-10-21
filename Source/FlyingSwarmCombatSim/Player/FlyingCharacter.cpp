@@ -3,6 +3,8 @@
 #include "Player/FlyingCharacter.h"
 
 #include "Swarm/FlyingBoid.h"
+#include "Game/FlyingSwarmCombatSimGameMode.h"
+#include "Engine/World.h"
 #include "Camera/CameraComponent.h"
 #include "CollisionQueryParams.h"
 #include "Components/SceneComponent.h"
@@ -69,6 +71,7 @@ void AFlyingCharacter::BeginPlay()
 float AFlyingCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 	AController* EventInstigator, AActor* DamageCauser)
 {
+	auto* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<AFlyingSwarmCombatSimGameMode>() : nullptr;
 	if (!IsAlive() || bIsProcessingDamage || !FMath::IsFinite(DamageAmount) || DamageAmount <= 0.0f)
 	{
 		return 0.0f;
@@ -100,6 +103,11 @@ float AFlyingCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Damag
 			Movement->DisableMovement();
 		}
 		DisableInput(Cast<APlayerController>(GetController()));
+	}
+
+	if (bJustDied)
+	{
+		if (IsValid(Mode)) Mode->PlayerDied(this);
 	}
 
 	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
@@ -260,11 +268,17 @@ FFlyingShotPreview AFlyingCharacter::GetShotPreview() const
 
 void AFlyingCharacter::Fire()
 {
+	if (bIsFiringRunShot) return;
+	TGuardValue<bool> ShotGuard(bIsFiringRunShot, true);
 	const FFlyingShotPreview Shot = GetShotPreview();
 	if (!Shot.bValid)
 	{
 		return;
 	}
+
+	TWeakObjectPtr<AFlyingSwarmCombatSimGameMode> Mode(GetWorld()->GetAuthGameMode<AFlyingSwarmCombatSimGameMode>());
+	const bool bRecordShot = Mode.IsValid() && Mode->IsRunPawn(this);
+	if (bRecordShot && !Mode->BeginShot(this)) return;
 
 	float ActualDamage = 0.0f;
 	bool bKilled = false;
@@ -285,6 +299,9 @@ void AFlyingCharacter::Fire()
 		}
 	}
 
+	// Close the shot transaction before any player presentation callback can reenter gameplay.
+	if (bRecordShot && Mode.IsValid()) Mode->EndShot(this, ActualDamage, bKilled);
+	if (!IsValid(this)) return;
 	OnShotResolved(Shot.BeamStart, Shot.BeamEnd, Shot.HitResult);
 	if (IsValid(this) && FMath::IsFinite(ActualDamage) && ActualDamage > 0.0f)
 	{
