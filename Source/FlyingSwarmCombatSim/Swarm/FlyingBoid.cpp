@@ -1,5 +1,6 @@
 #include "Swarm/FlyingBoid.h"
 #include "Combat/BoidAttackComponent.h"
+#include "Sound/SoundBase.h"
 #include "StateTreeReference.h"
 #include "StateTree.h"
 #include "UObject/UnrealType.h"
@@ -114,6 +115,11 @@ float AFlyingBoid::TakeDamage(float DamageAmount, FDamageEvent const& DamageEven
 	if (ActualDamage <= 0.0f)
 	{
 		return 0.0f;
+	}
+
+	if (GetNetMode() != NM_DedicatedServer && HitSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, HitSound, GetActorLocation(), HitVolume, 1.0f, 0.0f, HitAttenuation);
 	}
 
 	const bool bJustDied = PreviousHealth > 0.0f && CurrentHealth <= 0.0f;

@@ -16,6 +16,8 @@ class UInputAction;
 class UInputMappingContext;
 class UUserWidget;
 class UGameplayHUDWidget;
+class UHitFeedbackWidget;
+class UMaterialInterface;
 struct FInputActionValue;
 
 /** Owns local run UI and input across the player-to-spectator possession change. */
@@ -35,6 +37,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Run")
 	void RequestRetry();
 
+	void PlayHitFeedback();
+
 	void CaptureDeathView();
 	void QueueSpectator();
 
@@ -43,6 +47,29 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetupInputComponent() override;
 	bool ShouldUseTouchControls() const;
+
+	/** Cosmetic rotation in degrees; zero disables shake. Does not change control rotation. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Player Hit", meta = (ClampMin = "0", ClampMax = "2"))
+	float ShakeDegrees = 0.3f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Player Hit", meta = (ClampMin = "0.01", ClampMax = "1"))
+	float ShakeSeconds = 0.18f;
+
+	/** UI material with HitColor (vector) and HitOpacity (scalar) parameters. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Vignette")
+	TObjectPtr<UMaterialInterface> HitVignetteMaterial;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Vignette", meta = (HideAlphaChannel))
+	FLinearColor HitColor = FLinearColor(0.55f, 0.015f, 0.025f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Vignette", meta = (ClampMin = "0", ClampMax = "1"))
+	float VignetteOpacity = 0.45f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Vignette", meta = (ClampMin = "0.001", ClampMax = "1"))
+	float VignetteFadeInSeconds = 0.035f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Vignette", meta = (ClampMin = "0.001", ClampMax = "3"))
+	float VignetteFadeOutSeconds = 0.3f;
 
 	// Retain these names/types so existing controller Blueprint assignments survive.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Combat")
@@ -112,6 +139,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UGameplayHUDWidget> RunStatsWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UHitFeedbackWidget> HitFeedbackWidget;
 
 	TWeakObjectPtr<AFlyingCharacter> DeadPawn;
 	TSet<FKey> ReleaseKeys;

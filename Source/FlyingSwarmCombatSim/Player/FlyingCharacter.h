@@ -10,6 +10,7 @@
 
 class UInputAction;
 class USceneComponent;
+class USoundBase;
 struct FInputActionValue;
 
 /** Read-only shot geometry shared by the HUD and firing. */
@@ -105,6 +106,19 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapons", meta = (ClampMin = "0.0"))
 	float DamagePerShot = 10.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
+	TObjectPtr<USoundBase> PlayerShotSound;
+
+	/** Assign the same asset as the enemy's HitSound for identical hit feedback. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
+	TObjectPtr<USoundBase> HitSound;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio", meta = (ClampMin = "0", ClampMax = "2"))
+	float ShotVolume = 0.7f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio", meta = (ClampMin = "0", ClampMax = "2"))
+	float HitVolume = 0.7f;
 
 	UPROPERTY(BlueprintAssignable, Category = "Health")
 	FBoidHealthChangedDelegate OnHealthChanged;

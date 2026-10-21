@@ -79,8 +79,9 @@ void FSwarmPositionReservationGrid::Query(const FVector& Position, double Radius
 				for (int64 Z = Minimum.Z; Z <= Maximum.Z; ++Z)
 				{
 					if (const TArray<int32>* Bucket = Cells.Find(
-						FIntVector(static_cast<int32>(X), static_cast<int32>(Y), static_cast<int32>(Z)))) OutIds.Append(
-						*Bucket);
+						FIntVector(static_cast<int32>(X), static_cast<int32>(Y), static_cast<int32>(Z))))
+						OutIds.Append(
+							*Bucket);
 				}
 	}
 	for (int32 Id : Unindexed) OutIds.Add(Id);
