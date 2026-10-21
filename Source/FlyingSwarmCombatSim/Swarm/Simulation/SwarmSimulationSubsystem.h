@@ -5,6 +5,8 @@
 #include "Swarm/Simulation/SwarmSimulationSettings.h"
 #include "Swarm/Simulation/SwarmSpatialIndex.h"
 #include "Swarm/Simulation/SwarmCollisionQueries.h"
+#include "Swarm/Flight/SwarmAvoidanceCandidates.h"
+#include "Engine/HitResult.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 #include "Templates/UniquePtr.h"
@@ -72,6 +74,20 @@ public:
 	int32 LastFrameProjectileLaunches = 0;
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
 	int32 LastFrameVisibilityQueryRebuilds = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameAvoidanceCandidates = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameClearanceProbes = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameMandatoryClearanceRequests = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameRecoveryClearanceProbes = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int64 LastFramePlannerSpacingScores = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int64 LastFramePlannerSamplesExamined = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int64 LastFramePlannerReservationChecks = 0;
 	/** Per-frame work counts, summed over substeps; sample visits include self entries. */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
 	int64 LastFrameNeighborCellsVisited = 0;
@@ -251,6 +267,9 @@ private:
 	FSwarmSpatialIndex NeighborIndex;
 	TArray<FSwarmSpatialSample> NeighborSamples;
 	TArray<int32> NeighborCandidates;
+	TArray<FSwarmAvoidanceCandidate> AvoidanceCandidates;
+	TArray<int32> AvoidanceOrder;
+	TArray<FHitResult> ClearanceHits;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingAdditions;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingRemovals;
 	int32 NextAgentId = 1;

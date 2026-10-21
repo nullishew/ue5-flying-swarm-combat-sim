@@ -69,7 +69,7 @@ public:
 	void ApplyWanderAcceleration(const FVector& DesiredAcceleration, float DeltaTime, float CruiseSpeed,
 		const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed);
 	bool ConstrainWanderToBounds(const UBoxComponent* Bounds, float BoundsMarginCm);
-	bool RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed);
+	bool RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed, int32 MaxCandidates = 0);
 	void InitializeWander(int32 InAgentId, int32 InitialSeed);
 	FVector TurnFlightHeading(const FVector& DesiredDirection, float MaxTurnRateDeg, float DeltaTime);
 	void HoldAvoidanceDirection(const FVector& Direction, float Seconds);

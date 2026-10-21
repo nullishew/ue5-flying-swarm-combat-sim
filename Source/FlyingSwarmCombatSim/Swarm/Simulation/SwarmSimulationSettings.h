@@ -60,6 +60,9 @@ struct FLYINGSWARMCOMBATSIM_API FSwarmTuningSettings
 	float MaxLookaheadCm = 700.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "0.0"))
 	float AvoidanceHoldSeconds = 0.5f;
+	/** Optional escape directions tested per steering decision; mandatory safety probes are separate. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "1"))
+	int32 MaxAvoidanceCandidates = 8;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recovery", meta = (ClampMin = "0.1"))
 	float ProgressWindowSeconds = 0.5f;

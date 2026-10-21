@@ -5,6 +5,7 @@
 
 class UBoxComponent;
 class UWorld;
+struct FHitResult;
 
 namespace BoidFlight
 {
@@ -20,5 +21,5 @@ namespace BoidFlight
 	float Clearance(UWorld* World, const UBoxComponent* Bounds, const FVector& Position,
 		float Radius, const FVector& Direction, float Distance, float BoundsMargin, float ObstacleMargin,
 		ECollisionChannel Channel, const FCollisionQueryParams& Params,
-		const FCollisionResponseParams& Responses);
+		const FCollisionResponseParams& Responses, TArray<FHitResult>* ScratchHits = nullptr);
 }

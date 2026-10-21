@@ -5,6 +5,8 @@
 #include "UObject/UnrealType.h"
 
 #include "Swarm/Flight/BoidFlightAlgorithms.h"
+#include "Swarm/Flight/SwarmAvoidanceCandidates.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Swarm/Flight/BoidFlightMovementComponent.h"
 #include "Player/FlyingCharacter.h"
 #include "Swarm/Steering/BoidSteeringProfile.h"
@@ -664,7 +666,7 @@ bool AFlyingBoid::ConstrainWanderToBounds(const UBoxComponent* Bounds, float Bou
 	return true;
 }
 
-bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed)
+bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed, int32 MaxCandidates)
 {
 	if (bDead)
 	{
@@ -680,19 +682,30 @@ bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float Boun
 	const FCollisionQueryParams Params = BoidMovementQuery(this);
 	const FCollisionResponseParams Responses(CollisionSphere->GetCollisionResponseToChannels());
 	const ECollisionChannel Channel = CollisionSphere->GetCollisionObjectType();
+	TRACE_CPUPROFILER_EVENT_SCOPE(SwarmRecovery);
+	TArray<FVector> RawDirections;
+	RawDirections.Add(FlightHeading);
+	RawDirections.Add(-FlightHeading);
+	BoidFlight::AppendEscapeDirections(RawDirections);
+	TArray<FSwarmAvoidanceCandidate> Prepared;
+	for (const FVector& Direction : RawDirections) SwarmAvoidanceCandidates::AddDirection(Prepared, Direction);
 	TArray<FVector> Directions;
-	Directions.Add(FlightHeading);
-	Directions.Add(-FlightHeading);
-	BoidFlight::AppendEscapeDirections(Directions);
+	for (const FSwarmAvoidanceCandidate& Candidate : Prepared) Directions.Add(Candidate.Direction);
+	const int32 DirectionLimit = MaxCandidates > 0 ? FMath::Min(MaxCandidates, Directions.Num()) : Directions.Num();
+	const int32 PositionLimit = MaxCandidates > 0 ? MaxCandidates : MAX_int32;
+	const int32 SearchPositionLimit = FMath::Max(1, PositionLimit - (bHasLastValidWanderPosition ? 1 : 0));
+	int32 PositionsTested = 0;
+	TArray<FHitResult> ScratchHits;
 	// Rotate tie order per boid to avoid identical exits for a stopped group.
 	auto FindEscape = [&](const FVector& Position, FVector& Direction)
 	{
 		float BestClearance = BoidFlight::ContactSkinCm;
-		for (int32 Index = 0; Index < Directions.Num(); ++Index)
+		for (int32 Index = 0; Index < DirectionLimit; ++Index)
 		{
-			const FVector Candidate = Directions[(Index + AgentId) % Directions.Num()];
+			const FVector Candidate = Directions[(Index + FMath::Max(0, AgentId)) % Directions.Num()];
+			if (USwarmSimulationSubsystem* Simulation = GetSimulationSubsystem()) ++Simulation->LastFrameRecoveryClearanceProbes;
 			const float Clearance = BoidFlight::Clearance(GetWorld(), Bounds, Position, Radius,
-				Candidate, 200.0f, BoundsMarginCm, 0.0f, Channel, Params, Responses);
+				Candidate, 200.0f, BoundsMarginCm, 0.0f, Channel, Params, Responses, &ScratchHits);
 			if (Clearance > BestClearance)
 			{
 				BestClearance = Clearance;
@@ -726,6 +739,8 @@ bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float Boun
 	const float Offset = Radius * 2.0f + FMath::Max(0.0f, BoundsMarginCm);
 	auto TryRelocate = [&](const FVector& Position)
 	{
+		if (PositionsTested >= PositionLimit) return false;
+		++PositionsTested;
 		if (!BoidFlight::InsideBounds(Position, Transform, Extent)
 			|| !BoidFlight::IsClear(GetWorld(), Position, Radius + BoidFlight::ContactSkinCm,
 				Channel, Params, Responses) || !FindEscape(Position, Escape))
@@ -744,8 +759,10 @@ bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float Boun
 	}
 	for (float Distance : { Offset, Offset * 1.5f, Offset * 2.0f })
 	{
+		if (PositionsTested >= SearchPositionLimit) break;
 		for (const FVector& Direction : Directions)
 		{
+			if (PositionsTested >= SearchPositionLimit) break;
 			if (TryRelocate(Base + Direction * Distance))
 			{
 				return true;

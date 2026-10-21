@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "CollisionQueryParams.h"
+#include "Swarm/Simulation/SwarmSpatialIndex.h"
+#include "Swarm/Positioning/SwarmPositionReservationGrid.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 
@@ -90,9 +92,16 @@ private:
         const FVector& Center, AActor* Target, FString& Rejection) const;
     float EvaluateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid, const FVector& Goal,
         const FVector& Center, AActor* Target, const FBoidRangedSettings& Settings, float& Open, FString& Rejection) const;
-    float ScorePosition(AFlyingBoid* Boid, const FVector& Goal, const FVector& Center, float Open,
+    float ScorePosition(int32 AgentId, AFlyingBoid* Boid, const FVector& Goal, const FVector& Center, float Open,
         float TravelLength, const FBoidRangedSettings& Settings, float* OutSeedAffinity = nullptr) const;
     void CancelSearch(FSearchState& State);
+	void RemoveReservation(int32 AgentId);
+	FSwarmSpatialIndex PositionIndex;
+	TArray<FSwarmSpatialSample> PositionSamples;
+	FSwarmPositionReservationGrid ReservationGrid;
+	TMap<int32, TWeakObjectPtr<AFlyingBoid>> ActiveById;
+	mutable TArray<int32> PositionCandidates;
+	mutable TArray<int32> ReservationCandidates;
 	const FCollisionQueryParams& GetVisibilityQuery(AFlyingBoid* Boid, AActor* Target) const;
 	struct FVisibilityQuery
 	{

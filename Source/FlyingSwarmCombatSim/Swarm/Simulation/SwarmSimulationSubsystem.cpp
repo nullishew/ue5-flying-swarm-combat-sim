@@ -24,6 +24,8 @@
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarExhaustiveAvoidance(TEXT("swarm.ExhaustiveAvoidance"), 0, TEXT("Use all optional avoidance/recovery directions instead of bounded search."), ECVF_Default);
+
 	TAutoConsoleVariable<int32> CVarUseSpatialNeighbors(TEXT("swarm.UseSpatialNeighbors"), 1, TEXT("Use captured spatial neighbor queries for 32 or more snapshots. Set to 0 for exhaustive comparison."), ECVF_Default);
 
 	struct FBoidSnapshot
@@ -461,6 +463,8 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 	LastFrameNeighborCellsVisited = LastFrameNeighborSamplesExamined = LastFrameNeighborPairChecks = 0;
 	LastFrameNeighborWallTraces = LastFrameAcceptedNeighbors = LastFrameMovementSubsteps = 0;
 	LastFrameProjectileLaunches = LastFrameVisibilityQueryRebuilds = 0;
+	LastFrameAvoidanceCandidates = LastFrameClearanceProbes = LastFrameMandatoryClearanceRequests = LastFrameRecoveryClearanceProbes = 0;
+	LastFramePlannerSpacingScores = LastFramePlannerSamplesExamined = LastFramePlannerReservationChecks = 0;
 	CollisionQueries.Refresh();
 	CollisionExceptionActors = CollisionQueries.GetExceptionCount();
 	LiveAttackProjectiles = CollisionQueries.GetProjectileCount();
@@ -700,6 +704,9 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	const float NeighborRadius = FMath::Max(0.0f, Tuning.NeighborRadiusCm);
 	const float PredictionSeconds = FMath::Max(0.0f, Tuning.PredictedSeparationSeconds);
 	const float PredictionClearance = FMath::Max(0.0f, Tuning.PredictedSeparationClearanceCm);
+	const int32 AvoidanceLimit = CVarExhaustiveAvoidance.GetValueOnGameThread() != 0 ? 0 : FMath::Max(1, Tuning.MaxAvoidanceCandidates);
+	TArray<FVector> EscapeDirections;
+	BoidFlight::AppendEscapeDirections(EscapeDirections);
 	double MaximumRadius = 0.0;
 	double MaximumSpeed = 0.0;
 	bool bFiniteEnvelopes = true;
@@ -903,76 +910,77 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		const FCollisionQueryParams QueryParams = ObstacleQuery(Self);
 		const USphereComponent* Sphere = Self.Boid->CollisionSphere;
 		const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
+		struct FCachedProbe { FVector Direction; float Clearance; };
+		TArray<FCachedProbe, TInlineAllocator<32>> ProbeCache;
 		auto Probe = [&](const FVector& Direction)
 		{
-			return BoidFlight::Clearance(GetWorld(), WanderBounds, Self.Position, Self.Radius,
-			                             Direction, Lookahead, Tuning.BoundsMarginCm, Tuning.ObstacleMarginCm,
-			                             Sphere->GetCollisionObjectType(), QueryParams, Responses);
+			const FVector Unit = Direction.GetSafeNormal();
+			for (const FCachedProbe& Cached : ProbeCache) if (Cached.Direction == Unit) return Cached.Clearance;
+			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmAvoidanceClearance);
+			++LastFrameClearanceProbes;
+			const float Clearance = BoidFlight::Clearance(GetWorld(), WanderBounds, Self.Position, Self.Radius, Unit, Lookahead, Tuning.BoundsMarginCm, Tuning.ObstacleMarginCm, Sphere->GetCollisionObjectType(), QueryParams, Responses, &ClearanceHits);
+			ProbeCache.Add({Unit, Clearance});
+			return Clearance;
 		};
 		const FVector Forward = Speed > 1.0f ? Self.Velocity / Speed : Self.Heading;
+		LastFrameMandatoryClearanceRequests += 2;
 		const float ForwardClearance = Probe(Forward);
 		const float IntentClearance = Probe(Desired);
 		Output.ProbeEnd = Self.Position + Forward * ForwardClearance;
 		Output.bThreatened = FMath::Min(ForwardClearance, IntentClearance) < Lookahead - BoidFlight::ContactSkinCm;
 		float ChosenClearance = IntentClearance;
+		bool bAvoidanceBlocked = false;
 		if (Output.bThreatened || bCriticalSeparation)
 		{
-			TArray<FVector> Candidates;
-			Candidates.Add(Desired);
-			Candidates.Add(Forward);
-			Candidates.Add(-Forward);
-			if (Boid->GetAvoidanceHoldSeconds() > 0.0f)
+			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmAvoidanceSelection);
+			AvoidanceCandidates.Reset();
+			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Desired, 0);
+			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Forward, 2);
+			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, -Forward);
+			const bool bHeld = Boid->GetAvoidanceHoldSeconds() > 0.0f;
+			if (bHeld) SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Boid->GetHeldAvoidanceDirection(), 1);
+			for (const FVector& Direction : EscapeDirections) SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Direction);
+			for (FSwarmAvoidanceCandidate& Candidate : AvoidanceCandidates)
 			{
-				Candidates.Add(Boid->GetHeldAvoidanceDirection());
-			}
-			BoidFlight::AppendEscapeDirections(Candidates);
-			FVector BestDirection = Desired;
-			float BestScore = -TNumericLimits<float>::Max();
-			bool bFoundUsable = false;
-			ChosenClearance = 0.0f;
-			for (const FVector& Candidate : Candidates)
-			{
-				const float Clearance = Probe(Candidate);
-				const bool bUsable = Clearance > BoidFlight::ContactSkinCm;
-				if (bFoundUsable && !bUsable)
-				{
-					continue;
-				}
-				float Crowding = 0.0f;
-				const FVector CandidateVelocity = Candidate * CruiseSpeed;
+				const FVector CandidateVelocity = Candidate.Direction * CruiseSpeed;
 				for (const FBoidSnapshot* Neighbor : VisibleNeighbors)
 				{
 					const FVector Offset = Self.Position - Neighbor->Position;
 					const FVector Relative = CandidateVelocity - Neighbor->Velocity;
-					const float Time = FMath::Clamp(static_cast<float>(-FVector::DotProduct(Offset, Relative)
-						                                / FMath::Max(Relative.SizeSquared(),
-						                                             static_cast<double>(UE_SMALL_NUMBER))), 0.0f,
-					                                PredictionSeconds);
+					const float Time = FMath::Clamp(static_cast<float>(-FVector::DotProduct(Offset, Relative) / FMath::Max(Relative.SizeSquared(), static_cast<double>(UE_SMALL_NUMBER))), 0.0f, PredictionSeconds);
 					const float PredictedDistance = (Offset + Relative * Time).Size();
 					const float ClearanceNeeded = FMath::Max(PredictionClearance, Self.Radius + Neighbor->Radius);
-					Crowding += FMath::Max(0.0f, 1.0f - PredictedDistance / FMath::Max(1.0f, ClearanceNeeded));
+					Candidate.Crowding += FMath::Max(0.0f, 1.0f - PredictedDistance / FMath::Max(1.0f, ClearanceNeeded));
+					if (Candidate.Crowding >= 2.0f) break;
 				}
-				const float Continuity = Boid->GetAvoidanceHoldSeconds() > 0.0f
-					                         ? static_cast<float>(FVector::DotProduct(
-						                         Candidate, Boid->GetHeldAvoidanceDirection()))
-					                         : 0.0f;
-				const float Score = 3.0f * Clearance / Lookahead + 0.8f * FVector::DotProduct(Candidate, Desired)
-					+ 0.6f * Continuity - 2.0f * FMath::Min(Crowding, 2.0f);
+				const float Continuity = bHeld ? static_cast<float>(FVector::DotProduct(Candidate.Direction, Boid->GetHeldAvoidanceDirection())) : 0.0f;
+				Candidate.Rank = 0.8f * FVector::DotProduct(Candidate.Direction, Desired) + 0.6f * Continuity - 2.0f * FMath::Min(Candidate.Crowding, 2.0f);
+			}
+			SwarmAvoidanceCandidates::Select(AvoidanceCandidates, AvoidanceLimit, AvoidanceOrder);
+			LastFrameAvoidanceCandidates += AvoidanceOrder.Num();
+			FVector BestDirection = Desired;
+			float BestScore = -TNumericLimits<float>::Max();
+			bool bFoundUsable = false;
+			ChosenClearance = 0.0f;
+			for (int32 CandidateIndex : AvoidanceOrder)
+			{
+				const FSwarmAvoidanceCandidate& Candidate = AvoidanceCandidates[CandidateIndex];
+				const float Clearance = Probe(Candidate.Direction);
+				const bool bUsable = Clearance > BoidFlight::ContactSkinCm;
+				if (bFoundUsable && !bUsable) continue;
+				const float Score = 3.0f * Clearance / Lookahead + Candidate.Rank;
 				if ((bUsable && !bFoundUsable) || Score > BestScore)
 				{
 					bFoundUsable = bUsable;
 					BestScore = Score;
-					BestDirection = Candidate;
+					BestDirection = Candidate.Direction;
 					ChosenClearance = Clearance;
 				}
 			}
+			bAvoidanceBlocked = !bFoundUsable;
 			Desired = BestDirection;
 			Output.Avoidance = BestDirection;
-			if (Boid->GetAvoidanceHoldSeconds() <= 0.0f
-				|| FVector::DotProduct(BestDirection, Boid->GetHeldAvoidanceDirection()) < 0.98f)
-			{
-				Boid->HoldAvoidanceDirection(BestDirection, Tuning.AvoidanceHoldSeconds);
-			}
+			if (bFoundUsable && (!bHeld || FVector::DotProduct(BestDirection, Boid->GetHeldAvoidanceDirection()) < 0.98f)) Boid->HoldAvoidanceDirection(BestDirection, Tuning.AvoidanceHoldSeconds);
 		}
 
 		Output.Heading = Boid->TurnFlightHeading(Desired, Tuning.MaxTurnRateDegPerSec, StepTime);
@@ -980,6 +988,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			&& (Speed < 20.0f || ForwardClearance < FMath::Max(Self.Radius + Tuning.ObstacleMarginCm,
 			                                                   Speed * Tuning.SteeringResponseSeconds)));
 		const FVector SteeringDirection = bEmergency ? Desired : Output.Heading;
+		++LastFrameMandatoryClearanceRequests;
 		const float SteeringClearance = Probe(SteeringDirection);
 		// Clearance is sphere-center travel; the probe already accounts for radius.
 		const float SafeSpeed = FMath::Sqrt(2.0f * Brake * FMath::Max(0.0f,
@@ -1042,6 +1051,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			Output.TargetSpeed = FMath::Min(Output.TargetSpeed,
 			                                CruiseSpeed * FMath::Clamp(ChosenClearance / Lookahead, 0.25f, 1.0f));
 		}
+		if (bAvoidanceBlocked) { Output.TargetSpeed = 0.0f; Output.Constraint = EBoidCombatMovementConstraint::Obstacle; }
 		if (bCriticalSeparation) Output.Constraint = EBoidCombatMovementConstraint::EmergencySeparation;
 		const float Accel = FMath::Max(0.0f, Boid->MaxAccelerationCmPerSec2 * Tuning.AccelerationScale);
 		const float Limit = Output.TargetSpeed < Speed ? FMath::Max(Accel, Brake) : Accel;
@@ -1149,7 +1159,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 						}
 					}
 					else if (NavigationMode == EBoidNavigationMode::AuthoredRoutes
-						|| !Boid->RecoverWanderFromStall(WanderBounds, Tuning.BoundsMarginCm, SpeedLimit))
+						|| !Boid->RecoverWanderFromStall(WanderBounds, Tuning.BoundsMarginCm, SpeedLimit, AvoidanceLimit))
 					{
 						UE_LOG(LogTemp, Warning, TEXT("Boid %s cannot recover: no free escape inside WanderBounds."),
 						       *Boid->GetName());
