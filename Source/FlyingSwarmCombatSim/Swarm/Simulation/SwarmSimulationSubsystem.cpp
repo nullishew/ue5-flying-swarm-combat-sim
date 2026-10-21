@@ -16,12 +16,18 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Swarm/FlyingBoid.h"
 #include "Player/FlyingCharacter.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarExhaustiveAvoidance(TEXT("swarm.ExhaustiveAvoidance"), 0, TEXT("Use all optional avoidance/recovery directions instead of bounded search."), ECVF_Default);
+
+	TAutoConsoleVariable<int32> CVarUseSpatialNeighbors(TEXT("swarm.UseSpatialNeighbors"), 1, TEXT("Use captured spatial neighbor queries for 32 or more snapshots. Set to 0 for exhaustive comparison."), ECVF_Default);
+
 	struct FBoidSnapshot
 	{
 		TWeakObjectPtr<AFlyingBoid> Boid;
@@ -113,6 +119,7 @@ USwarmSimulationSubsystem::USwarmSimulationSubsystem() = default;
 void USwarmSimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	CollisionQueries.Initialize(GetWorld());
 	RangedPositionPlanner.Reset(new FBoidRangedPositionPlanner());
 	CombatCoordinator.Reset(new FBoidCombatMovementCoordinator());
 	RouteService.Reset(new FBoidFlightRouteService());
@@ -230,19 +237,7 @@ void USwarmSimulationSubsystem::FinishShutdown()
 {
 	if (bShutdownComplete) return;
 	bShutdownComplete = true;
-	for (const FRegisteredAgent& Agent : Agents)
-	{
-		if (AFlyingBoid* Boid = Agent.Boid.Get())
-		{
-			for (const FRegisteredAgent& Other : Agents)
-			{
-				if (AFlyingBoid* OtherBoid = Other.Boid.Get(); OtherBoid && OtherBoid != Boid)
-				{
-					Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, false);
-				}
-			}
-		}
-	}
+	CollisionQueries.Reset();
 	// Stop logic while associations still identify this runner. Task exits cannot
 	// reactivate a dead boid, and no queued request can restart a shutting-down runner.
 	for (const FRegisteredAgent& Agent : Agents)
@@ -271,6 +266,8 @@ void USwarmSimulationSubsystem::FinishShutdown()
 		CombatCoordinator->ResetAgent(Agent.Id);
 	}
 	Agents.Reset();
+	AgentIds.Reset();
+	AgentRecordIndices.Reset();
 	PendingAdditions.Reset();
 	PendingRemovals.Reset();
 	WanderBounds = nullptr;
@@ -288,7 +285,9 @@ void USwarmSimulationSubsystem::RegisterBoid(AFlyingBoid* Boid)
 		return;
 	}
 	const TWeakObjectPtr<AFlyingBoid> WeakBoid(Boid);
+	CollisionQueries.RefreshBoid(Boid);
 	PendingRemovals.Remove(WeakBoid);
+	if (GetAgentId(Boid) != INDEX_NONE) CollisionQueries.RegisterMovementBody(Boid);
 	if (GetAgentId(Boid) == INDEX_NONE && !PendingAdditions.Contains(WeakBoid))
 	{
 		PendingAdditions.Add(WeakBoid);
@@ -302,15 +301,7 @@ void USwarmSimulationSubsystem::UnregisterBoid(AFlyingBoid* Boid)
 		return;
 	}
 	const TWeakObjectPtr<AFlyingBoid> WeakBoid(Boid);
-	// EndPlay may invalidate the weak handle before the next safe boundary.
-	for (const FRegisteredAgent& Other : Agents)
-	{
-		if (AFlyingBoid* OtherBoid = Other.Boid.Get(); OtherBoid && OtherBoid != Boid)
-		{
-			OtherBoid->CollisionSphere->IgnoreActorWhenMoving(Boid, false);
-			Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, false);
-		}
-	}
+	CollisionQueries.UnregisterMovementBody(Boid);
 	PendingAdditions.Remove(WeakBoid);
 	if (GetAgentId(Boid) == INDEX_NONE)
 	{
@@ -325,15 +316,26 @@ void USwarmSimulationSubsystem::UnregisterBoid(AFlyingBoid* Boid)
 
 int32 USwarmSimulationSubsystem::GetAgentId(const AFlyingBoid* Boid) const
 {
-	if (!Boid) return INDEX_NONE;
-	for (const FRegisteredAgent& Agent : Agents)
+	if (!IsValid(Boid)) return INDEX_NONE;
+	const int32* Id = AgentIds.Find(TWeakObjectPtr<AFlyingBoid>(const_cast<AFlyingBoid*>(Boid)));
+	return Id ? *Id : INDEX_NONE;
+}
+
+void USwarmSimulationSubsystem::RebuildAgentLookups()
+{
+	AgentIds.Reset();
+	AgentRecordIndices.Reset();
+	for (int32 Index = 0; Index < Agents.Num(); ++Index)
 	{
-		if (Agent.Boid.Get() == Boid)
-		{
-			return Agent.Id;
-		}
+		AgentIds.Add(Agents[Index].Boid, Agents[Index].Id);
+		AgentRecordIndices.Add(Agents[Index].Id, Index);
 	}
-	return INDEX_NONE;
+}
+
+USwarmSimulationSubsystem::FRegisteredAgent* USwarmSimulationSubsystem::FindAgentRecord(int32 AgentId)
+{
+	const int32* Index = AgentRecordIndices.Find(AgentId);
+	return Index && Agents.IsValidIndex(*Index) && Agents[*Index].Id == AgentId ? &Agents[*Index] : nullptr;
 }
 
 bool USwarmSimulationSubsystem::IsInsideSafeBounds(const FVector& Position, float BoidRadius) const
@@ -352,21 +354,21 @@ bool USwarmSimulationSubsystem::IsInsideSafeBounds(const FVector& Position, floa
 
 void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 {
-	TArray<TWeakObjectPtr<AFlyingBoid>> Removals = MoveTemp(PendingRemovals);
+	TSet<TWeakObjectPtr<AFlyingBoid>> Removals;
+	for (const auto& Weak : PendingRemovals) Removals.Add(Weak);
 	PendingRemovals.Reset();
 	// Detach records before invoking StateTree exits, which can destroy actors or end the world.
 	TArray<FRegisteredAgent> RemovedAgents;
+	TSet<int32> RemovedIds;
 	for (const FRegisteredAgent& Agent : Agents)
 	{
-		if (!Agent.Boid.IsValid() || !Agent.Boid->IsAlive() || Removals.Contains(Agent.Boid)) RemovedAgents.Add(Agent);
+		if (!Agent.Boid.IsValid() || !Agent.Boid->IsAlive() || Removals.Contains(Agent.Boid)) { RemovedAgents.Add(Agent); RemovedIds.Add(Agent.Id); }
 	}
-	Agents.RemoveAll([&RemovedAgents](const FRegisteredAgent& Agent)
+	if (!RemovedAgents.IsEmpty())
 	{
-		return RemovedAgents.ContainsByPredicate([&Agent](const FRegisteredAgent& Removed)
-		{
-			return Removed.Id == Agent.Id;
-		});
-	});
+		Agents.RemoveAll([&RemovedIds](const FRegisteredAgent& Agent) { return RemovedIds.Contains(Agent.Id); });
+		RebuildAgentLookups();
+	}
 	for (const FRegisteredAgent& Removed : RemovedAgents)
 	{
 		if (bEndingPlay) return;
@@ -376,14 +378,7 @@ void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 		NavigationAgents.Remove(Removed.Id);
 		AFlyingBoid* Boid = Removed.Boid.Get();
 		if (!Boid) continue;
-		for (const FRegisteredAgent& Other : Agents)
-		{
-			if (AFlyingBoid* OtherBoid = Other.Boid.Get())
-			{
-				OtherBoid->CollisionSphere->IgnoreActorWhenMoving(Boid, false);
-				Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, false);
-			}
-		}
+		CollisionQueries.UnregisterMovementBody(Boid);
 		if (IsValid(Boid->AttackComponent)) Boid->AttackComponent->DeactivateCombatContext(0);
 		Boid->SetWanderActive(false);
 		if (IsValid(Boid->StateTree) && Boid->StateTree->IsRunning()) Boid->StateTree->StopLogic(TEXT("Unregistered"));
@@ -415,6 +410,8 @@ void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 		FRegisteredAgent& Agent = Agents.AddDefaulted_GetRef();
 		Agent.Boid = WeakBoid;
 		Agent.Id = NextAgentId++;
+		AgentIds.Add(WeakBoid, Agent.Id);
+		AgentRecordIndices.Add(Agent.Id, Agents.Num() - 1);
 		Boid->InitializeWander(Agent.Id, Tuning.InitialSeed);
 		if (Tuning.CruiseSpeedCmPerSec <= 0.0f || Boid->MaxSpeedCmPerSec <= 0.0f
 			|| Boid->MaxAccelerationCmPerSec2 * Tuning.AccelerationScale <= 0.0f)
@@ -422,14 +419,7 @@ void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 			UE_LOG(LogTemp, Warning, TEXT("Boid %s cannot cruise with zero speed or acceleration settings."),
 			       *Boid->GetName());
 		}
-		for (const FRegisteredAgent& Other : Agents)
-		{
-			if (AFlyingBoid* OtherBoid = Other.Boid.Get(); OtherBoid && OtherBoid != Boid)
-			{
-				Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, true);
-				OtherBoid->CollisionSphere->IgnoreActorWhenMoving(Boid, true);
-			}
-		}
+		CollisionQueries.RegisterMovementBody(Boid);
 		const FVector SafeExtent = WanderBounds->GetScaledBoxExtent()
 			- FVector(Boid->CollisionSphere->GetScaledSphereRadius() + FMath::Max(0.0f, Tuning.BoundsMarginCm));
 		if (SafeExtent.GetMin() <= BoidFlight::ContactSkinCm)
@@ -461,11 +451,7 @@ void USwarmSimulationSubsystem::InitializePendingLogic()
 		AFlyingBoid* Boid = Weak.Get();
 		if (!CanSimulate()) break;
 		if (!IsAgentRegistered(Boid)) continue;
-		for (FRegisteredAgent& Agent : Agents) if (Agent.Boid == Weak)
-		{
-			Agent.bLogicStarted = true;
-			break;
-		}
+		if (FRegisteredAgent* Agent = FindAgentRecord(GetAgentId(Boid))) Agent->bLogicStarted = true;
 		if (IsValid(Boid->StateTree)) Boid->StateTree->StartLogic();
 	}
 }
@@ -474,6 +460,14 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	if (bFrameActive || bEndingPlay) return;
+	LastFrameNeighborCellsVisited = LastFrameNeighborSamplesExamined = LastFrameNeighborPairChecks = 0;
+	LastFrameNeighborWallTraces = LastFrameAcceptedNeighbors = LastFrameMovementSubsteps = 0;
+	LastFrameProjectileLaunches = LastFrameVisibilityQueryRebuilds = 0;
+	LastFrameAvoidanceCandidates = LastFrameClearanceProbes = LastFrameMandatoryClearanceRequests = LastFrameRecoveryClearanceProbes = 0;
+	LastFramePlannerSpacingScores = LastFramePlannerSamplesExamined = LastFramePlannerReservationChecks = 0;
+	CollisionQueries.Refresh();
+	CollisionExceptionActors = CollisionQueries.GetExceptionCount();
+	LiveAttackProjectiles = CollisionQueries.GetProjectileCount();
 	bFrameActive = true;
 	ON_SCOPE_EXIT
 	{
@@ -564,59 +558,63 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 {
 	if (!CanSimulate()) return;
 	ApplyQueuedRegistrations();
+	++LastFrameMovementSubsteps;
 	TArray<FBoidSnapshot> Snapshots;
 	Snapshots.Reserve(Agents.Num());
-	for (const FRegisteredAgent& Agent : Agents)
 	{
-		AFlyingBoid* Boid = Agent.Boid.Get();
-		if (!Agent.bLogicStarted || !IsValid(Boid) || !Boid->IsAlive() || !IsAgentRegistered(Boid))
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSnapshotCapture);
+		for (const FRegisteredAgent& Agent : Agents)
 		{
-			continue;
-		}
-		if (Boid->IsSteeringActive())
-		{
-			Boid->ConstrainWanderToBounds(WanderBounds, Tuning.BoundsMarginCm);
-		}
-		if (!CanSimulate()) return;
-		if (!IsAgentRegistered(Boid)) continue;
-		FBoidSnapshot& Snapshot = Snapshots.AddDefaulted_GetRef();
-		Snapshot.Boid = Boid;
-		Snapshot.Position = Boid->GetActorLocation();
-		Snapshot.Velocity = Boid->GetFlightVelocity();
-		Snapshot.Heading = Boid->GetFlightHeading();
-		Snapshot.Radius = Boid->CollisionSphere->GetScaledSphereRadius();
-		Snapshot.Id = Agent.Id;
-		Snapshot.bSteeringActive = Boid->IsSteeringActive();
-		Snapshot.MovementIntent = Boid->GetMovementIntent();
-		Snapshot.Goal = Snapshot.MovementIntent.Goal;
-		Snapshot.bHasGoal = Snapshot.MovementIntent.bHasGoal;
-		if (IsValid(Boid->MovementTarget))
-		{
-			Snapshot.TargetPosition = Boid->MovementTarget->GetActorLocation();
-			Snapshot.TargetActor = Boid->MovementTarget;
-			const AFlyingCharacter* Player = Cast<AFlyingCharacter>(Boid->MovementTarget.Get());
-			const AFlyingBoid* TargetBoid = Cast<AFlyingBoid>(Boid->MovementTarget.Get());
-			Snapshot.bHasTarget = (!Player || Player->IsAlive()) && (!TargetBoid || TargetBoid->IsAlive());
-		}
-		Snapshot.bCoordinatedCombat = Snapshot.MovementIntent.Policy == EBoidMovementPolicy::RangedOrbit;
-		const bool UsesNavigation = Snapshot.bCoordinatedCombat
-			|| Snapshot.MovementIntent.bIsTransit
-			|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes
-				&& (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::FollowStandOff || Snapshot.MovementIntent.
-					Policy == EBoidMovementPolicy::LocationArrival));
-		if (UsesNavigation)
-		{
-			const FBoidNavigationGoal Navigation = GetNavigationGoal(Boid);
-			Snapshot.bPlannerControlled = true;
-			Snapshot.MovementIntent.Policy = EBoidMovementPolicy::LocationArrival;
-			Snapshot.Goal = Navigation.Goal;
-			Snapshot.bHasGoal = Navigation.bHasGoal;
-			Snapshot.bNavigationHold = Navigation.bHoldPosition;
-			Snapshot.bContinuousGoal = Navigation.bContinuousGoal;
-			Snapshot.bPreferNavigationGoal = Navigation.bPreferNavigationGoal;
-			Snapshot.NavigationPhase = Navigation.Phase;
-			Snapshot.OrbitContext = Navigation.OrbitContext;
-			Snapshot.DesiredSpeed = Navigation.DesiredSpeed;
+			AFlyingBoid* Boid = Agent.Boid.Get();
+			if (!Agent.bLogicStarted || !IsValid(Boid) || !Boid->IsAlive() || !IsAgentRegistered(Boid))
+			{
+				continue;
+			}
+			if (Boid->IsSteeringActive())
+			{
+				Boid->ConstrainWanderToBounds(WanderBounds, Tuning.BoundsMarginCm);
+			}
+			if (!CanSimulate()) return;
+			if (!IsAgentRegistered(Boid)) continue;
+			FBoidSnapshot& Snapshot = Snapshots.AddDefaulted_GetRef();
+			Snapshot.Boid = Boid;
+			Snapshot.Position = Boid->GetActorLocation();
+			Snapshot.Velocity = Boid->GetFlightVelocity();
+			Snapshot.Heading = Boid->GetFlightHeading();
+			Snapshot.Radius = Boid->CollisionSphere->GetScaledSphereRadius();
+			Snapshot.Id = Agent.Id;
+			Snapshot.bSteeringActive = Boid->IsSteeringActive();
+			Snapshot.MovementIntent = Boid->GetMovementIntent();
+			Snapshot.Goal = Snapshot.MovementIntent.Goal;
+			Snapshot.bHasGoal = Snapshot.MovementIntent.bHasGoal;
+			if (IsValid(Boid->MovementTarget))
+			{
+				Snapshot.TargetPosition = Boid->MovementTarget->GetActorLocation();
+				Snapshot.TargetActor = Boid->MovementTarget;
+				const AFlyingCharacter* Player = Cast<AFlyingCharacter>(Boid->MovementTarget.Get());
+				const AFlyingBoid* TargetBoid = Cast<AFlyingBoid>(Boid->MovementTarget.Get());
+				Snapshot.bHasTarget = (!Player || Player->IsAlive()) && (!TargetBoid || TargetBoid->IsAlive());
+			}
+			Snapshot.bCoordinatedCombat = Snapshot.MovementIntent.Policy == EBoidMovementPolicy::RangedOrbit;
+			const bool UsesNavigation = Snapshot.bCoordinatedCombat
+				|| Snapshot.MovementIntent.bIsTransit
+				|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes
+					&& (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::FollowStandOff || Snapshot.MovementIntent.
+						Policy == EBoidMovementPolicy::LocationArrival));
+			if (UsesNavigation)
+			{
+				const FBoidNavigationGoal Navigation = GetNavigationGoal(Boid);
+				Snapshot.bPlannerControlled = true;
+				Snapshot.MovementIntent.Policy = EBoidMovementPolicy::LocationArrival;
+				Snapshot.Goal = Navigation.Goal;
+				Snapshot.bHasGoal = Navigation.bHasGoal;
+				Snapshot.bNavigationHold = Navigation.bHoldPosition;
+				Snapshot.bContinuousGoal = Navigation.bContinuousGoal;
+				Snapshot.bPreferNavigationGoal = Navigation.bPreferNavigationGoal;
+				Snapshot.NavigationPhase = Navigation.Phase;
+				Snapshot.OrbitContext = Navigation.OrbitContext;
+				Snapshot.DesiredSpeed = Navigation.DesiredSpeed;
+			}
 		}
 	}
 
@@ -650,10 +648,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 					                              Snapshot.Radius + FMath::Max(0.f, Tuning.ObstacleMarginCm))
 					    : !IsDirectGoalClear(Snapshot.Goal));
 		}
-		FRegisteredAgent* Record = Agents.FindByPredicate([&](const FRegisteredAgent& Agent)
-		{
-			return Agent.Id == Snapshot.Id;
-		});
+		FRegisteredAgent* Record = FindAgentRecord(Snapshot.Id);
 		if (!Record)
 		{
 			continue;
@@ -709,8 +704,29 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	const float NeighborRadius = FMath::Max(0.0f, Tuning.NeighborRadiusCm);
 	const float PredictionSeconds = FMath::Max(0.0f, Tuning.PredictedSeparationSeconds);
 	const float PredictionClearance = FMath::Max(0.0f, Tuning.PredictedSeparationClearanceCm);
+	const int32 AvoidanceLimit = CVarExhaustiveAvoidance.GetValueOnGameThread() != 0 ? 0 : FMath::Max(1, Tuning.MaxAvoidanceCandidates);
+	TArray<FVector> EscapeDirections;
+	BoidFlight::AppendEscapeDirections(EscapeDirections);
+	double MaximumRadius = 0.0;
+	double MaximumSpeed = 0.0;
+	bool bFiniteEnvelopes = true;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSpatialIndexRebuild);
+		NeighborSamples.Reset(Snapshots.Num());
+		for (const FBoidSnapshot& Snapshot : Snapshots)
+		{
+			NeighborSamples.Add({Snapshot.Position, Snapshot.Id});
+			const double Speed = Snapshot.Velocity.Size();
+			bFiniteEnvelopes &= FMath::IsFinite(Speed) && FMath::IsFinite(Snapshot.Radius);
+			MaximumRadius = FMath::Max(MaximumRadius, static_cast<double>(Snapshot.Radius));
+			MaximumSpeed = FMath::Max(MaximumSpeed, Speed);
+		}
+		const bool bUseGrid = Snapshots.Num() >= 32 && CVarUseSpatialNeighbors.GetValueOnGameThread() != 0 && bFiniteEnvelopes;
+		NeighborIndex.Rebuild(NeighborSamples, Tuning.NeighborCellSizeCm, bUseGrid);
+	}
 	for (const FBoidSnapshot& Self : Snapshots)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSteeringEvaluation);
 		FSteeringOutput& Output = Outputs.AddDefaulted_GetRef();
 		if (!Self.bSteeringActive)
 		{
@@ -776,12 +792,23 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		bool bCloseApproach = false;
 		bool bOverlappingNeighbor = false;
 		TArray<const FBoidSnapshot*> VisibleNeighbors;
-		for (const FBoidSnapshot& Neighbor : Snapshots)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmNeighborGathering);
+			const double PhysicalEnvelope = Self.Radius + MaximumRadius + BoidFlight::ContactSkinCm;
+			const double SpacingEnvelope = FMath::Max3(static_cast<double>(SeparationRadius), PhysicalEnvelope, static_cast<double>(PredictionClearance));
+			const double QueryRadius = FMath::Max(static_cast<double>(NeighborRadius), SpacingEnvelope + (Self.Velocity.Size() + MaximumSpeed) * PredictionSeconds) + 1.0;
+			const FSwarmSpatialQueryStats Stats = NeighborIndex.QueryRadius(Self.Position, QueryRadius, NeighborCandidates);
+			LastFrameNeighborCellsVisited += Stats.CellsVisited;
+			LastFrameNeighborSamplesExamined += Stats.SamplesExamined;
+		}
+		for (const int32 NeighborIndexInSnapshot : NeighborCandidates)
+		{
+			const FBoidSnapshot& Neighbor = Snapshots[NeighborIndexInSnapshot];
 			if (Neighbor.Id == Self.Id)
 			{
 				continue;
 			}
+			++LastFrameNeighborPairChecks;
 			const FVector Offset = Self.Position - Neighbor.Position;
 			const float Distance = Offset.Size();
 			const float PhysicalClearance = Self.Radius + Neighbor.Radius + BoidFlight::ContactSkinCm;
@@ -790,11 +817,14 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			const float SearchRadius = FMath::Max(NeighborRadius,
 			                                      PairSeparationRadius + static_cast<float>(RelativeVelocity.Size()) *
 			                                      PredictionSeconds);
-			if (Distance > SearchRadius || HasWallBetween(GetWorld(), Self, Neighbor))
+			if (Distance > SearchRadius) continue;
+			++LastFrameNeighborWallTraces;
+			if (HasWallBetween(GetWorld(), Self, Neighbor))
 			{
 				continue;
 			}
 			VisibleNeighbors.Add(&Neighbor);
+			++LastFrameAcceptedNeighbors;
 			const FVector Away = Distance > UE_SMALL_NUMBER
 				                     ? Offset / Distance
 				                     : OverlapSeparationDirection(Self.Id, Neighbor.Id);
@@ -880,76 +910,77 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		const FCollisionQueryParams QueryParams = ObstacleQuery(Self);
 		const USphereComponent* Sphere = Self.Boid->CollisionSphere;
 		const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
+		struct FCachedProbe { FVector Direction; float Clearance; };
+		TArray<FCachedProbe, TInlineAllocator<32>> ProbeCache;
 		auto Probe = [&](const FVector& Direction)
 		{
-			return BoidFlight::Clearance(GetWorld(), WanderBounds, Self.Position, Self.Radius,
-			                             Direction, Lookahead, Tuning.BoundsMarginCm, Tuning.ObstacleMarginCm,
-			                             Sphere->GetCollisionObjectType(), QueryParams, Responses);
+			const FVector Unit = Direction.GetSafeNormal();
+			for (const FCachedProbe& Cached : ProbeCache) if (Cached.Direction == Unit) return Cached.Clearance;
+			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmAvoidanceClearance);
+			++LastFrameClearanceProbes;
+			const float Clearance = BoidFlight::Clearance(GetWorld(), WanderBounds, Self.Position, Self.Radius, Unit, Lookahead, Tuning.BoundsMarginCm, Tuning.ObstacleMarginCm, Sphere->GetCollisionObjectType(), QueryParams, Responses, &ClearanceHits);
+			ProbeCache.Add({Unit, Clearance});
+			return Clearance;
 		};
 		const FVector Forward = Speed > 1.0f ? Self.Velocity / Speed : Self.Heading;
+		LastFrameMandatoryClearanceRequests += 2;
 		const float ForwardClearance = Probe(Forward);
 		const float IntentClearance = Probe(Desired);
 		Output.ProbeEnd = Self.Position + Forward * ForwardClearance;
 		Output.bThreatened = FMath::Min(ForwardClearance, IntentClearance) < Lookahead - BoidFlight::ContactSkinCm;
 		float ChosenClearance = IntentClearance;
+		bool bAvoidanceBlocked = false;
 		if (Output.bThreatened || bCriticalSeparation)
 		{
-			TArray<FVector> Candidates;
-			Candidates.Add(Desired);
-			Candidates.Add(Forward);
-			Candidates.Add(-Forward);
-			if (Boid->GetAvoidanceHoldSeconds() > 0.0f)
+			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmAvoidanceSelection);
+			AvoidanceCandidates.Reset();
+			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Desired, 0);
+			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Forward, 2);
+			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, -Forward);
+			const bool bHeld = Boid->GetAvoidanceHoldSeconds() > 0.0f;
+			if (bHeld) SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Boid->GetHeldAvoidanceDirection(), 1);
+			for (const FVector& Direction : EscapeDirections) SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Direction);
+			for (FSwarmAvoidanceCandidate& Candidate : AvoidanceCandidates)
 			{
-				Candidates.Add(Boid->GetHeldAvoidanceDirection());
-			}
-			BoidFlight::AppendEscapeDirections(Candidates);
-			FVector BestDirection = Desired;
-			float BestScore = -TNumericLimits<float>::Max();
-			bool bFoundUsable = false;
-			ChosenClearance = 0.0f;
-			for (const FVector& Candidate : Candidates)
-			{
-				const float Clearance = Probe(Candidate);
-				const bool bUsable = Clearance > BoidFlight::ContactSkinCm;
-				if (bFoundUsable && !bUsable)
-				{
-					continue;
-				}
-				float Crowding = 0.0f;
-				const FVector CandidateVelocity = Candidate * CruiseSpeed;
+				const FVector CandidateVelocity = Candidate.Direction * CruiseSpeed;
 				for (const FBoidSnapshot* Neighbor : VisibleNeighbors)
 				{
 					const FVector Offset = Self.Position - Neighbor->Position;
 					const FVector Relative = CandidateVelocity - Neighbor->Velocity;
-					const float Time = FMath::Clamp(static_cast<float>(-FVector::DotProduct(Offset, Relative)
-						                                / FMath::Max(Relative.SizeSquared(),
-						                                             static_cast<double>(UE_SMALL_NUMBER))), 0.0f,
-					                                PredictionSeconds);
+					const float Time = FMath::Clamp(static_cast<float>(-FVector::DotProduct(Offset, Relative) / FMath::Max(Relative.SizeSquared(), static_cast<double>(UE_SMALL_NUMBER))), 0.0f, PredictionSeconds);
 					const float PredictedDistance = (Offset + Relative * Time).Size();
 					const float ClearanceNeeded = FMath::Max(PredictionClearance, Self.Radius + Neighbor->Radius);
-					Crowding += FMath::Max(0.0f, 1.0f - PredictedDistance / FMath::Max(1.0f, ClearanceNeeded));
+					Candidate.Crowding += FMath::Max(0.0f, 1.0f - PredictedDistance / FMath::Max(1.0f, ClearanceNeeded));
+					if (Candidate.Crowding >= 2.0f) break;
 				}
-				const float Continuity = Boid->GetAvoidanceHoldSeconds() > 0.0f
-					                         ? static_cast<float>(FVector::DotProduct(
-						                         Candidate, Boid->GetHeldAvoidanceDirection()))
-					                         : 0.0f;
-				const float Score = 3.0f * Clearance / Lookahead + 0.8f * FVector::DotProduct(Candidate, Desired)
-					+ 0.6f * Continuity - 2.0f * FMath::Min(Crowding, 2.0f);
+				const float Continuity = bHeld ? static_cast<float>(FVector::DotProduct(Candidate.Direction, Boid->GetHeldAvoidanceDirection())) : 0.0f;
+				Candidate.Rank = 0.8f * FVector::DotProduct(Candidate.Direction, Desired) + 0.6f * Continuity - 2.0f * FMath::Min(Candidate.Crowding, 2.0f);
+			}
+			SwarmAvoidanceCandidates::Select(AvoidanceCandidates, AvoidanceLimit, AvoidanceOrder);
+			LastFrameAvoidanceCandidates += AvoidanceOrder.Num();
+			FVector BestDirection = Desired;
+			float BestScore = -TNumericLimits<float>::Max();
+			bool bFoundUsable = false;
+			ChosenClearance = 0.0f;
+			for (int32 CandidateIndex : AvoidanceOrder)
+			{
+				const FSwarmAvoidanceCandidate& Candidate = AvoidanceCandidates[CandidateIndex];
+				const float Clearance = Probe(Candidate.Direction);
+				const bool bUsable = Clearance > BoidFlight::ContactSkinCm;
+				if (bFoundUsable && !bUsable) continue;
+				const float Score = 3.0f * Clearance / Lookahead + Candidate.Rank;
 				if ((bUsable && !bFoundUsable) || Score > BestScore)
 				{
 					bFoundUsable = bUsable;
 					BestScore = Score;
-					BestDirection = Candidate;
+					BestDirection = Candidate.Direction;
 					ChosenClearance = Clearance;
 				}
 			}
+			bAvoidanceBlocked = !bFoundUsable;
 			Desired = BestDirection;
 			Output.Avoidance = BestDirection;
-			if (Boid->GetAvoidanceHoldSeconds() <= 0.0f
-				|| FVector::DotProduct(BestDirection, Boid->GetHeldAvoidanceDirection()) < 0.98f)
-			{
-				Boid->HoldAvoidanceDirection(BestDirection, Tuning.AvoidanceHoldSeconds);
-			}
+			if (bFoundUsable && (!bHeld || FVector::DotProduct(BestDirection, Boid->GetHeldAvoidanceDirection()) < 0.98f)) Boid->HoldAvoidanceDirection(BestDirection, Tuning.AvoidanceHoldSeconds);
 		}
 
 		Output.Heading = Boid->TurnFlightHeading(Desired, Tuning.MaxTurnRateDegPerSec, StepTime);
@@ -957,6 +988,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			&& (Speed < 20.0f || ForwardClearance < FMath::Max(Self.Radius + Tuning.ObstacleMarginCm,
 			                                                   Speed * Tuning.SteeringResponseSeconds)));
 		const FVector SteeringDirection = bEmergency ? Desired : Output.Heading;
+		++LastFrameMandatoryClearanceRequests;
 		const float SteeringClearance = Probe(SteeringDirection);
 		// Clearance is sphere-center travel; the probe already accounts for radius.
 		const float SafeSpeed = FMath::Sqrt(2.0f * Brake * FMath::Max(0.0f,
@@ -1019,6 +1051,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			Output.TargetSpeed = FMath::Min(Output.TargetSpeed,
 			                                CruiseSpeed * FMath::Clamp(ChosenClearance / Lookahead, 0.25f, 1.0f));
 		}
+		if (bAvoidanceBlocked) { Output.TargetSpeed = 0.0f; Output.Constraint = EBoidCombatMovementConstraint::Obstacle; }
 		if (bCriticalSeparation) Output.Constraint = EBoidCombatMovementConstraint::EmergencySeparation;
 		const float Accel = FMath::Max(0.0f, Boid->MaxAccelerationCmPerSec2 * Tuning.AccelerationScale);
 		const float Limit = Output.TargetSpeed < Speed ? FMath::Max(Accel, Brake) : Accel;
@@ -1029,6 +1062,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	const AFlyingBoid* Selected = IsValid(DebugBoid) ? DebugBoid.Get() : TestBoid.Get();
 	for (int32 Index = 0; Index < Snapshots.Num(); ++Index)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmMovementCommit);
 		AFlyingBoid* Boid = Snapshots[Index].Boid.Get();
 		if (!IsValid(Boid) || !Boid->IsAlive() || !Boid->IsSteeringActive()
 			|| !IsAgentRegistered(Boid) || !CanSimulate() || !Outputs[Index].bSteeringActive)
@@ -1049,12 +1083,9 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			                                static_cast<int64>(Outputs[Index].Constraint)));
 		float StalledSeconds = 0.0f;
 		int32 RecoveryCount = 0;
-		for (FRegisteredAgent& Agent : Agents)
+		if (FRegisteredAgent* Record = FindAgentRecord(Snapshots[Index].Id))
 		{
-			if (Agent.Id != Snapshots[Index].Id)
-			{
-				continue;
-			}
+			FRegisteredAgent& Agent = *Record;
 			if (Agent.IntentRevision != Snapshots[Index].MovementIntent.Revision
 				|| Agent.ProgressTarget != Snapshots[Index].TargetActor
 				|| Agent.bProgressRetreating != Snapshots[Index].bRetreating)
@@ -1110,6 +1141,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 				}
 				if (Agent.NoProgressSeconds >= FMath::Max(0.1f, Tuning.StuckProgressSeconds))
 				{
+					Agent.NoProgressSeconds = 0.0f;
 					Boid->HoldAvoidanceDirection(FVector::ZeroVector, 0.0f);
 					++Agent.RecoveryCount;
 					if (Snapshots[Index].bPlannerControlled)
@@ -1127,22 +1159,23 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 						}
 					}
 					else if (NavigationMode == EBoidNavigationMode::AuthoredRoutes
-						|| !Boid->RecoverWanderFromStall(WanderBounds, Tuning.BoundsMarginCm, SpeedLimit))
+						|| !Boid->RecoverWanderFromStall(WanderBounds, Tuning.BoundsMarginCm, SpeedLimit, AvoidanceLimit))
 					{
 						UE_LOG(LogTemp, Warning, TEXT("Boid %s cannot recover: no free escape inside WanderBounds."),
 						       *Boid->GetName());
 					}
 					if (!CanSimulate() || !IsAgentRegistered(Boid)) return;
-					Agent.NoProgressSeconds = 0.0f;
 				}
 			}
 			else
 			{
 				Agent.NoProgressSeconds = Agent.ProgressWindowSeconds = Agent.ProgressDistanceCm = 0.0f;
 			}
-			StalledSeconds = Agent.NoProgressSeconds;
-			RecoveryCount = Agent.RecoveryCount;
-			break;
+			if (const FRegisteredAgent* Current = FindAgentRecord(Snapshots[Index].Id))
+			{
+				StalledSeconds = Current->NoProgressSeconds;
+				RecoveryCount = Current->RecoveryCount;
+			}
 		}
 		if (bDrawSteering && Boid == Selected)
 		{

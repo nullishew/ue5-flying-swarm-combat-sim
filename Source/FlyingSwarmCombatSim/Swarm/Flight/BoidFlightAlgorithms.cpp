@@ -61,7 +61,7 @@ namespace BoidFlight
 	float Clearance(UWorld* World, const UBoxComponent* Bounds, const FVector& Position,
 		float Radius, const FVector& Direction, float Distance, float BoundsMargin, float ObstacleMargin,
 		ECollisionChannel Channel, const FCollisionQueryParams& Params,
-		const FCollisionResponseParams& Responses)
+		const FCollisionResponseParams& Responses, TArray<FHitResult>* ScratchHits)
 	{
 		const FVector Unit = Direction.GetSafeNormal();
 		if (Unit.IsNearlyZero() || Distance <= 0.0f)
@@ -86,7 +86,9 @@ namespace BoidFlight
 			}
 		}
 
-		TArray<FHitResult> Hits;
+		TArray<FHitResult> LocalHits;
+		TArray<FHitResult>& Hits = ScratchHits ? *ScratchHits : LocalHits;
+		Hits.Reset();
 		const FVector End = Position + Unit * Distance;
 		World->SweepMultiByChannel(Hits, Position, End, FQuat::Identity, Channel,
 			FCollisionShape::MakeSphere(Radius + FMath::Max(0.0f, ObstacleMargin)), Params, Responses);

@@ -12,6 +12,7 @@ class UProjectileMovementComponent;
 class USphereComponent;
 class UPrimitiveComponent;
 class UWorld;
+class USwarmSimulationSubsystem;
 
 /** Straight-flight projectile launched by a boid. Damage is restricted to its intended player. */
 UCLASS()
@@ -60,9 +61,6 @@ private:
 	void HandleBlockingHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComponent,
 		FVector NormalImpulse, const FHitResult& Hit);
 
-	void HandleActorSpawned(AActor* SpawnedActor);
-	void RegisterExistingBoidsToIgnore();
-
 	void ResolveImpact(const FHitResult& Hit, bool bMayDamageIntendedTarget);
 
 	TWeakObjectPtr<AFlyingBoid> Shooter;
@@ -77,7 +75,7 @@ private:
 	float LaunchLifespan = 0.0f;
 	FVector LaunchDirection = FVector::ForwardVector;
 	FVector LaunchOrigin = FVector::ZeroVector;
-	FDelegateHandle ActorSpawnedDelegateHandle;
+	TWeakObjectPtr<USwarmSimulationSubsystem> CollisionSimulation;
 
 	void SendLaunchPresentationIfReady();
 	void ConfigureCollisionResponses();

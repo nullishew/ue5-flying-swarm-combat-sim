@@ -13,6 +13,7 @@
 void USwarmSimulationSubsystem::CopyProjectSettings()
 {
 	const auto* Settings = GetDefault<USwarmSimulationSettings>();
+	MaxPopulation = FMath::Max(0, Settings->MaxPopulation);
 	Tuning = Settings->Tuning;
 	RangedSettings = Settings->RangedSettings;
 	RouteQueriesPerFrame = Settings->RouteQueriesPerFrame;
@@ -22,6 +23,20 @@ void USwarmSimulationSubsystem::CopyProjectSettings()
 	LastKnownPursuitSeconds = Settings->LastKnownPursuitSeconds;
 	CombatControlQueriesPerFrame = Settings->CombatControlQueriesPerFrame;
 	DefaultSteeringProfile = Settings->DefaultSteeringProfile.LoadSynchronous();
+}
+
+bool USwarmSimulationSubsystem::CanSpawnBoid() const
+{
+	UWorld* World = GetWorld();
+	if (bEndingPlay || !IsInitialized() || !World || MaxPopulation <= 0) return false;
+	int32 LivingPopulation = 0;
+	// Query only on spawn attempts. World actors include placed and not-yet-registered enemies.
+	for (TActorIterator<AFlyingBoid> It(World); It; ++It)
+	{
+		const AFlyingBoid* Boid = *It;
+		if (IsValid(Boid) && !Boid->IsActorBeingDestroyed() && Boid->IsAlive() && ++LivingPopulation >= MaxPopulation) return false;
+	}
+	return true;
 }
 
 void USwarmSimulationSubsystem::NotifySetupChanged()

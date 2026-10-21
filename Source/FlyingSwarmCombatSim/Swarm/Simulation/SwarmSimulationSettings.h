@@ -34,6 +34,9 @@ struct FLYINGSWARMCOMBATSIM_API FSwarmTuningSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
 	float NeighborRadiusCm = 450.0f;
+	/** Spatial-query cell width, not a limit on neighbor awareness or prediction distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "1"))
+	float NeighborCellSizeCm = 900.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
 	float SeparationDistanceCm = 180.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
@@ -57,6 +60,9 @@ struct FLYINGSWARMCOMBATSIM_API FSwarmTuningSettings
 	float MaxLookaheadCm = 700.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "0.0"))
 	float AvoidanceHoldSeconds = 0.5f;
+	/** Optional escape directions tested per steering decision; mandatory safety probes are separate. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "1"))
+	int32 MaxAvoidanceCandidates = 8;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recovery", meta = (ClampMin = "0.1"))
 	float ProgressWindowSeconds = 0.5f;
@@ -83,6 +89,9 @@ class FLYINGSWARMCOMBATSIM_API USwarmSimulationSettings : public UDeveloperSetti
 
 public:
 	virtual FName GetCategoryName() const override { return TEXT("Game"); }
+	/** World-wide living enemy limit for population spawners. Zero disables spawning. */
+	UPROPERTY(Config, EditAnywhere, Category = "Population", meta = (ClampMin = "0"))
+	int32 MaxPopulation = 67;
 	UPROPERTY(Config, EditAnywhere, Category = "Simulation")
 	FSwarmTuningSettings Tuning;
 	UPROPERTY(Config, EditAnywhere, Category = "Positioning")

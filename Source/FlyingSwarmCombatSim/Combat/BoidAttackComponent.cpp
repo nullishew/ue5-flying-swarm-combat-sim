@@ -6,7 +6,7 @@
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SphereComponent.h"
-#include "EngineUtils.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/Actor.h"
@@ -147,25 +147,32 @@ void UBoidAttackComponent::ResetCadence(EBoidAttackRejection Reason)
 	AttackFacts.LastRejection = Reason;
 }
 
-bool UBoidAttackComponent::ValidateMuzzleAndLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target) const
+bool UBoidAttackComponent::ValidateMuzzle(const FVector& MuzzleLocation, const FCollisionQueryParams& Params) const
 {
 	const AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
 	UWorld* World = GetWorld();
-	if (!Boid || !World || !Boid->CollisionSphere || MuzzleLocation.ContainsNaN() || Direction.ContainsNaN()) return false;
+	if (!Boid || !World || !Boid->CollisionSphere || MuzzleLocation.ContainsNaN()) return false;
 	const FVector Center = Boid->CollisionSphere->GetComponentLocation();
 	if (Center.ContainsNaN()) return false;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(BoidProjectileMuzzle), false);
-	Params.AddIgnoredActor(Boid);
-	// Clearance uses the same ignored actors as projectile flight.
-	for (TActorIterator<AFlyingBoid> It(World); It; ++It) Params.AddIgnoredActor(*It);
 	// Keep the target in the projectile-sized sweeps to reject a muzzle inside it.
 	const FCollisionShape Shape = FCollisionShape::MakeSphere(SnapshottedProjectileRadius);
 	if (World->OverlapBlockingTestByChannel(MuzzleLocation, FQuat::Identity, ECC_GameTraceChannel1, Shape, Params)) return false;
 	FHitResult Hit;
 	if (World->SweepSingleByChannel(Hit, Center, MuzzleLocation, FQuat::Identity, ECC_GameTraceChannel1, Shape, Params) && Hit.bBlockingHit) return false;
+	return true;
+}
+
+bool UBoidAttackComponent::ValidateLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const
+{
+	UWorld* World = GetWorld();
+	if (!World || Direction.ContainsNaN()) return false;
+	const FCollisionShape Shape = FCollisionShape::MakeSphere(SnapshottedProjectileRadius);
+	FHitResult Hit;
 	const FVector LaunchEnd = MuzzleLocation + Direction * SnapshottedClearance;
 	if (LaunchEnd.ContainsNaN()) return false;
 	FCollisionQueryParams LaunchParams = Params;
+	// A prior fan projectile's presentation may have spawned another exceptional swarm actor.
+	if (const USwarmSimulationSubsystem* Simulation = World->GetSubsystem<USwarmSimulationSubsystem>()) Simulation->GetCollisionQueries().AddProjectileExceptions(LaunchParams);
 	if (Target) LaunchParams.AddIgnoredActor(Target);
 	if (World->SweepSingleByChannel(Hit, MuzzleLocation, LaunchEnd, FQuat::Identity, ECC_GameTraceChannel1, Shape, LaunchParams) && Hit.bBlockingHit) return false;
 	return true;
@@ -308,10 +315,16 @@ void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 	};
 	AttackFacts.bCommonEligible = false;
 	AttackFacts.LastRejection = EBoidAttackRejection::MuzzleBlocked;
+	TRACE_CPUPROFILER_EVENT_SCOPE(SwarmAttackAttempt);
+	if (!CanContinue()) return;
+	FCollisionQueryParams MuzzleParams(SCENE_QUERY_STAT(BoidProjectileMuzzle), false);
+	MuzzleParams.AddIgnoredActor(Boid);
+	Boid->GetSimulationSubsystem()->GetCollisionQueries().AddProjectileExceptions(MuzzleParams);
+	if (!ValidateMuzzle(MuzzleLocation, MuzzleParams)) return;
 	for (const FVector& Direction : Directions)
 	{
 		if (!CanContinue()) return;
-		if (!ValidateMuzzleAndLaunch(MuzzleLocation, Direction, Target)) continue;
+		if (!ValidateLaunch(MuzzleLocation, Direction, Target, MuzzleParams)) continue;
 		AttackFacts.bCommonEligible = true;
 		const FTransform SpawnTransform(Direction.Rotation(), MuzzleLocation);
 		AFlyingBoidAttackProjectile* Projectile = World->SpawnActorDeferred<AFlyingBoidAttackProjectile>(

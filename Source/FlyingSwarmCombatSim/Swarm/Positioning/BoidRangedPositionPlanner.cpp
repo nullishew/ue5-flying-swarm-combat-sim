@@ -10,9 +10,13 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarSpatialPlannerScoring(TEXT("swarm.UseSpatialPlannerScoring"), 1, TEXT("Use local position/reservation spacing queries. Set to 0 for exhaustive scoring."), ECVF_Default);
+
 	constexpr float RangeErrorBucketCm = 50.f;
 
 	int32 RangeBucket(float Range, bool bAdaptive, const FBoidRangedSettings& Settings)
@@ -22,6 +26,23 @@ namespace
 			: FMath::Abs(Range - Settings.PreferredRangeCm);
 		return FMath::FloorToInt(Error / RangeErrorBucketCm);
 	}
+}
+
+const FCollisionQueryParams& FBoidRangedPositionPlanner::GetVisibilityQuery(AFlyingBoid* Boid, AActor* Target) const
+{
+	FVisibilityQuery& Cached = VisibilityQueries.FindOrAdd(Host->GetAgentId(Boid));
+	if (Cached.Generation != VisibilityGeneration || Cached.Target.Get() != Target)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmVisibilityQueryPreparation);
+		++Host->LastFrameVisibilityQueryRebuilds;
+		Cached.Params = FCollisionQueryParams(SCENE_QUERY_STAT(BoidRangedSight), true);
+		Cached.Params.AddIgnoredActor(Boid);
+		Cached.Params.AddIgnoredActor(Target);
+		for (const FBoidPlannerAgent& Agent : ActiveAgents) Cached.Params.AddIgnoredActor(Agent.Boid);
+		Cached.Target = Target;
+		Cached.Generation = VisibilityGeneration;
+	}
+	return Cached.Params;
 }
 
 bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid,
@@ -42,7 +63,7 @@ bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsyste
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BoidRangedPosition), false);
 	Params.AddIgnoredActor(Boid);
 	Params.AddIgnoredActor(Target);
-	for (const FBoidPlannerAgent& Agent : ActiveAgents) Params.AddIgnoredActor(Agent.Boid);
+	Runner.GetCollisionQueries().AddBodyExceptions(Params);
 	const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
 	++Runner.LastFramePositioningQueries;
 	if (Runner.GetWorld()->OverlapBlockingTestByChannel(Goal, FQuat::Identity, Sphere->GetCollisionObjectType(),
@@ -51,9 +72,9 @@ bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsyste
 		Rejection = TEXT("overlap");
 		return false;
 	}
-	Params.bTraceComplex = true;
+	const FCollisionQueryParams& VisibilityParams = GetVisibilityQuery(Boid, Target);
 	++Runner.LastFramePositioningQueries;
-	if (Runner.GetWorld()->LineTraceTestByChannel(Goal, Center, ECC_Visibility, Params))
+	if (Runner.GetWorld()->LineTraceTestByChannel(Goal, Center, ECC_Visibility, VisibilityParams))
 	{
 		Rejection = TEXT("sight");
 		return false;
@@ -78,7 +99,7 @@ float FBoidRangedPositionPlanner::EvaluateRangedPosition(USwarmSimulationSubsyst
 		FCollisionQueryParams RouteParams(SCENE_QUERY_STAT(BoidRangedDirectRoute), false);
 		RouteParams.AddIgnoredActor(Boid);
 		RouteParams.AddIgnoredActor(Target);
-		for (const FBoidPlannerAgent& Agent : ActiveAgents) RouteParams.AddIgnoredActor(Agent.Boid);
+		Runner.GetCollisionQueries().AddBodyExceptions(RouteParams);
 		const FCollisionResponseParams RouteResponses(Sphere->GetCollisionResponseToChannels());
 		++Runner.LastFramePositioningQueries;
 		if (Runner.GetWorld()->SweepTestByChannel(Boid->GetActorLocation(), Goal, FQuat::Identity,
@@ -91,7 +112,7 @@ float FBoidRangedPositionPlanner::EvaluateRangedPosition(USwarmSimulationSubsyst
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BoidRangedOpenness), false);
 	Params.AddIgnoredActor(Target);
 	Params.AddIgnoredActor(Boid);
-	for (const FBoidPlannerAgent& Agent : ActiveAgents) Params.AddIgnoredActor(Agent.Boid);
+	Runner.GetCollisionQueries().AddBodyExceptions(Params);
 	const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
 	const float Radius = Sphere->GetScaledSphereRadius() + FMath::Max(0.f, Runner.Tuning.ObstacleMarginCm);
 	FTransform Transform;
@@ -130,19 +151,50 @@ float FBoidRangedPositionPlanner::EvaluateRangedPosition(USwarmSimulationSubsyst
 	return Open;
 }
 
-float FBoidRangedPositionPlanner::ScorePosition(AFlyingBoid* Boid, const FVector& Goal, const FVector& Center,
+float FBoidRangedPositionPlanner::ScorePosition(int32 AgentId, AFlyingBoid* Boid, const FVector& Goal, const FVector& Center,
 	float Open, float TravelLength, const FBoidRangedSettings& Settings, float* OutSeedAffinity) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SwarmPlannerSpacingScore);
+	++Host->LastFramePlannerSpacingScores;
 	float Spacing = Settings.SpacingDistanceCm;
-	for (const FBoidPlannerAgent& Agent : ActiveAgents)
+	if (CVarSpatialPlannerScoring.GetValueOnGameThread() == 0)
 	{
-		AFlyingBoid* Other = Agent.Boid;
-		if (!IsValid(Other) || Other == Boid || !Other->IsAlive()) continue;
-		Spacing = FMath::Min(Spacing, static_cast<float>(FVector::Distance(Goal, Other->GetActorLocation())));
-		if (const FVector* Reservation = Reservations.Find(Agent.Id))
-			Spacing = FMath::Min(Spacing, static_cast<float>(FVector::Distance(Goal, *Reservation)));
+		Host->LastFramePlannerSamplesExamined += ActiveAgents.Num();
+		for (const FBoidPlannerAgent& Agent : ActiveAgents)
+		{
+			AFlyingBoid* Other = Agent.Boid;
+			if (!IsValid(Other) || Other == Boid || !Other->IsAlive()) continue;
+			Spacing = FMath::Min(Spacing, static_cast<float>(FVector::Distance(Goal, Other->GetActorLocation())));
+			if (const FVector* Reservation = Reservations.Find(Agent.Id))
+			{
+				++Host->LastFramePlannerReservationChecks;
+				Spacing = FMath::Min(Spacing, static_cast<float>(FVector::Distance(Goal, *Reservation)));
+			}
+		}
 	}
-	const uint32 Seed = BoidRanged::ChoiceSeed(static_cast<uint32>(Boid->GetSimulationSeed()), Host->GetAgentId(Boid));
+	else
+	{
+		const FSwarmSpatialQueryStats Stats = PositionIndex.QueryRadius(Goal, Settings.SpacingDistanceCm + 1.0, PositionCandidates);
+		Host->LastFramePlannerSamplesExamined += Stats.SamplesExamined;
+		for (int32 Index : PositionCandidates)
+		{
+			AFlyingBoid* Other = ActiveAgents[Index].Boid;
+			if (!IsValid(Other) || Other == Boid || !Other->IsAlive()) continue;
+			Spacing = FMath::Min(Spacing, static_cast<float>(FVector::Distance(Goal, PositionSamples[Index].Position)));
+		}
+		ReservationGrid.Query(Goal, Settings.SpacingDistanceCm + 1.0, ReservationCandidates);
+		for (int32 OtherId : ReservationCandidates)
+		{
+			const TWeakObjectPtr<AFlyingBoid>* Other = ActiveById.Find(OtherId);
+			if (OtherId == AgentId || !Other || !Other->IsValid() || !(*Other)->IsAlive()) continue;
+			if (const FVector* Reservation = Reservations.Find(OtherId))
+			{
+				++Host->LastFramePlannerReservationChecks;
+				Spacing = FMath::Min(Spacing, static_cast<float>(FVector::Distance(Goal, *Reservation)));
+			}
+		}
+	}
+	const uint32 Seed = BoidRanged::ChoiceSeed(static_cast<uint32>(Boid->GetSimulationSeed()), AgentId);
 	float Affinity = .5f;
 	const float Range = FVector::Distance(Goal, Center);
 	const float Base = Range < Settings.MinimumRangeCm - 1.f
@@ -173,12 +225,27 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 {
 	Host = &Runner;
 	const double Started = FPlatformTime::Seconds();
+	bool bMembershipChanged = ActiveAgents.Num() != Agents.Num();
+	for (int32 Index = 0; !bMembershipChanged && Index < Agents.Num(); ++Index) bMembershipChanged = ActiveAgents[Index].Id != Agents[Index].Id || ActiveAgents[Index].Boid != Agents[Index].Boid;
+	if (bMembershipChanged) ++VisibilityGeneration;
 	ActiveAgents.Reset(Agents.Num());
 	for (const FBoidPlannerAgent& Agent : Agents) ActiveAgents.Add(Agent);
 	ActiveAgents.Sort([](const FBoidPlannerAgent& A, const FBoidPlannerAgent& B) { return A.Id < B.Id; });
 	for (const FBoidPlannerAgent& Agent : ActiveAgents) RuntimeByAgent.FindOrAdd(Agent.Id);
 	Runner.LastFrameCandidates = Runner.LastFramePositioningQueries = 0;
 	const FBoidRangedSettings Settings = Runner.RangedSettings.Sanitized();
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmPlannerIndexRebuild);
+		PositionSamples.Reset(ActiveAgents.Num());
+		ActiveById.Reset();
+		for (const FBoidPlannerAgent& Agent : ActiveAgents)
+		{
+			PositionSamples.Add({IsValid(Agent.Boid) ? Agent.Boid->GetActorLocation() : FVector::ZeroVector, Agent.Id});
+			ActiveById.Add(Agent.Id, Agent.Boid);
+		}
+		PositionIndex.Rebuild(PositionSamples, Settings.SpacingDistanceCm, CVarSpatialPlannerScoring.GetValueOnGameThread() != 0);
+		if (ReservationGrid.Configure(Settings.SpacingDistanceCm)) for (const auto& Pair : Reservations) ReservationGrid.Set(Pair.Key, Pair.Value);
+	}
 	const float FrameDelta = FMath::Max(0.f, FMath::IsFinite(DeltaTime) ? DeltaTime : 0.f);
 
 	for (const FBoidPlannerAgent& Agent : ActiveAgents)
@@ -199,7 +266,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 		{
 			CancelSearch(State);
 			State = FSearchState();
-			Reservations.Remove(Agent.Id);
+			RemoveReservation(Agent.Id);
 			continue;
 		}
 
@@ -214,7 +281,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 			Selection.ChoiceSeed = Seed;
 			Selection.PreferredDirection = BoidRanged::PreferredDirection(Seed);
 			State.OwnerToken = OwnerToken;
-			Reservations.Remove(Agent.Id);
+			RemoveReservation(Agent.Id);
 		}
 		uint32 ConfigurationSignature = GetTypeHash(Settings.bAllowAdaptiveRange);
 		for (float Value : { Settings.MinimumRangeCm, Settings.PreferredRangeCm, Settings.MaximumRangeCm,
@@ -242,7 +309,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 				Selection.bHasPosition = false;
 				Selection.Score = -1.f;
 				Selection.FailureReason = TEXT("adaptive range disabled");
-				Reservations.Remove(Agent.Id);
+				RemoveReservation(Agent.Id);
 			}
 		}
 		if (Selection.bHasPosition)
@@ -260,11 +327,11 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 				Selection.bHasPosition = false;
 				Selection.Score = -1.f;
 				Selection.FailureReason = Rejection.IsEmpty() ? TEXT("selected range no longer valid") : Rejection;
-				Reservations.Remove(Agent.Id);
+				RemoveReservation(Agent.Id);
 			}
 			else
 			{
-				Selection.Score = ScorePosition(Boid, Selection.Destination, Center, Selection.Open,
+				Selection.Score = ScorePosition(Agent.Id, Boid, Selection.Destination, Center, Selection.Open,
 					Selection.Route.LengthCm, Settings, &Selection.SeedAffinity);
 			}
 		}
@@ -385,7 +452,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 			Candidate.Route.LengthCm = FVector::Distance(Boid->GetActorLocation(), Candidate.Position);
 			Candidate.LengthCm = Candidate.Route.LengthCm;
 			Candidate.bResolved = true;
-			Candidate.Score = ScorePosition(Boid, Candidate.Position, Target->GetActorLocation(), Candidate.Open,
+			Candidate.Score = ScorePosition(Agent.Id, Boid, Candidate.Position, Target->GetActorLocation(), Candidate.Open,
 				Candidate.LengthCm, Settings);
 		}
 		else
@@ -503,7 +570,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 				++Selection.Rejections;
 				continue;
 			}
-			Candidate.Score = ScorePosition(Boid, Candidate.Position, Center, Candidate.Open, Candidate.LengthCm, Settings);
+			Candidate.Score = ScorePosition(Agent.Id, Boid, Candidate.Position, Center, Candidate.Open, Candidate.LengthCm, Settings);
 		}
 
 		FCandidate* Best = nullptr;
@@ -543,7 +610,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 			if (bSameSelection)
 			{
 				Selection.Open = Best->Open;
-				Selection.Score = ScorePosition(Boid, Best->Position, Center, Best->Open, Best->LengthCm,
+				Selection.Score = ScorePosition(Agent.Id, Boid, Best->Position, Center, Best->Open, Best->LengthCm,
 					Settings, &Selection.SeedAffinity);
 				Selection.Route = Best->Route;
 				Selection.RouteGeneration = Runner.GetRouteService().GetGeneration();
@@ -607,7 +674,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 						FCollisionQueryParams RouteParams(SCENE_QUERY_STAT(BoidRangedDirectCommit), false);
 						RouteParams.AddIgnoredActor(Boid);
 						RouteParams.AddIgnoredActor(Target);
-						for (const FBoidPlannerAgent& Other : ActiveAgents) RouteParams.AddIgnoredActor(Other.Boid);
+						Runner.GetCollisionQueries().AddBodyExceptions(RouteParams);
 						const FCollisionResponseParams RouteResponses(Boid->CollisionSphere->GetCollisionResponseToChannels());
 						++Runner.LastFramePositioningQueries;
 						if (Runner.GetWorld()->SweepTestByChannel(Boid->GetActorLocation(), Best->Position,
@@ -633,7 +700,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 					Selection.bHasPosition = true;
 					Selection.bUsingAdaptiveRange = Best->bAdaptive;
 					Selection.Open = Best->Open;
-					Selection.Score = ScorePosition(Boid, Best->Position, Center, Best->Open, Best->LengthCm,
+					Selection.Score = ScorePosition(Agent.Id, Boid, Best->Position, Center, Best->Open, Best->LengthCm,
 						Settings, &Selection.SeedAffinity);
 					if (!bSameSelection) ++Selection.Version;
 					Selection.FailureReason.Reset();
@@ -667,10 +734,16 @@ const FBoidRangedSelection* FBoidRangedPositionPlanner::FindSelection(int32 Agen
 	return State ? &State->Selection : nullptr;
 }
 
+void FBoidRangedPositionPlanner::RemoveReservation(int32 AgentId)
+{
+	Reservations.Remove(AgentId);
+	ReservationGrid.Remove(AgentId);
+}
+
 void FBoidRangedPositionPlanner::SetReservation(int32 AgentId, const FVector& Position)
 {
-	if (Position.ContainsNaN()) Reservations.Remove(AgentId);
-	else Reservations.Add(AgentId, Position);
+	if (Position.ContainsNaN()) RemoveReservation(AgentId);
+	else { Reservations.Add(AgentId, Position); ReservationGrid.Set(AgentId, Position); }
 	if (FSearchState* State = RuntimeByAgent.Find(AgentId)) State->Selection.ReservationPosition = Position;
 }
 
@@ -696,12 +769,13 @@ void FBoidRangedPositionPlanner::ResetPosition(int32 AgentId)
 		State->bForceRefresh = true;
 		State->bExplicitRefresh = true;
 	}
-	Reservations.Remove(AgentId);
+	RemoveReservation(AgentId);
 }
 
 void FBoidRangedPositionPlanner::ResetAgent(int32 AgentId)
 {
 	if (FSearchState* State = RuntimeByAgent.Find(AgentId)) CancelSearch(*State);
 	RuntimeByAgent.Remove(AgentId);
-	Reservations.Remove(AgentId);
+	VisibilityQueries.Remove(AgentId);
+	RemoveReservation(AgentId);
 }

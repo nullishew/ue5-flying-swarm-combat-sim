@@ -3,6 +3,10 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Swarm/Simulation/SwarmSimulationSettings.h"
+#include "Swarm/Simulation/SwarmSpatialIndex.h"
+#include "Swarm/Simulation/SwarmCollisionQueries.h"
+#include "Swarm/Flight/SwarmAvoidanceCandidates.h"
+#include "Engine/HitResult.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 #include "Templates/UniquePtr.h"
@@ -55,6 +59,48 @@ public:
 	bool IsAgentRegistered(const AFlyingBoid* Boid) const;
 	UFUNCTION(BlueprintPure, Category="Swarm")
 	bool CanSimulate() const;
+	/** Spawn-time admission only; counts living enemies even outside population sensors or before registration. */
+	bool CanSpawnBoid() const;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Population")
+	int32 MaxPopulation = 67;
+	FSwarmCollisionQueries& GetCollisionQueries() { return CollisionQueries; }
+	const FSwarmCollisionQueries& GetCollisionQueries() const { return CollisionQueries; }
+	/** Refreshed by the shared exception cache; ordinary native enemies require no exclusions. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 CollisionExceptionActors = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 LiveAttackProjectiles = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 LastFrameProjectileLaunches = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 LastFrameVisibilityQueryRebuilds = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameAvoidanceCandidates = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameClearanceProbes = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameMandatoryClearanceRequests = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Avoidance")
+	int64 LastFrameRecoveryClearanceProbes = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int64 LastFramePlannerSpacingScores = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int64 LastFramePlannerSamplesExamined = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Ranged")
+	int64 LastFramePlannerReservationChecks = 0;
+	/** Per-frame work counts, summed over substeps; sample visits include self entries. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborCellsVisited = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborSamplesExamined = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborPairChecks = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameNeighborWallTraces = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int64 LastFrameAcceptedNeighbors = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
+	int32 LastFrameMovementSubsteps = 0;
 	UFUNCTION(BlueprintCallable, Category="Swarm")
 	void NotifySetupChanged();
 	/** Native attack callbacks; never used for boid movement. */
@@ -130,6 +176,7 @@ public:
 	TObjectPtr<UBoidSteeringProfile> DefaultSteeringProfile;
 
 private:
+	friend class FSwarmMembershipIndexTest;
 	friend class AFlyingBoid;
 	// Membership requests are exclusively issued by the agent lifecycle.
 	void RegisterBoid(AFlyingBoid* Boid);
@@ -212,6 +259,17 @@ private:
 	TUniquePtr<FBoidCombatMovementCoordinator, FBoidCombatCoordinatorDeleter> CombatCoordinator;
 
 	TArray<FRegisteredAgent> Agents;
+	TMap<TWeakObjectPtr<AFlyingBoid>, int32> AgentIds;
+	TMap<int32, int32> AgentRecordIndices;
+	void RebuildAgentLookups();
+	FRegisteredAgent* FindAgentRecord(int32 AgentId);
+	FSwarmCollisionQueries CollisionQueries;
+	FSwarmSpatialIndex NeighborIndex;
+	TArray<FSwarmSpatialSample> NeighborSamples;
+	TArray<int32> NeighborCandidates;
+	TArray<FSwarmAvoidanceCandidate> AvoidanceCandidates;
+	TArray<int32> AvoidanceOrder;
+	TArray<FHitResult> ClearanceHits;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingAdditions;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingRemovals;
 	int32 NextAgentId = 1;

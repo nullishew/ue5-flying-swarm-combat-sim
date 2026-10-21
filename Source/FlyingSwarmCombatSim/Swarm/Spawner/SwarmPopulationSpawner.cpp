@@ -251,6 +251,8 @@ AFlyingBoid* ASwarmPopulationSpawner::SpawnEnemy()
 {
 	if (!bInitialized || bEndingPlay || bSpawnInProgress || !EnemyClass || !GetWorld()
 		|| CurrentPopulation >= PopulationQuota || MaxPlacementAttempts <= 0) return nullptr;
+	const USwarmSimulationSubsystem* Simulation = GetWorld()->GetSubsystem<USwarmSimulationSubsystem>();
+	if (!Simulation || !Simulation->CanSpawnBoid()) return nullptr;
 	TGuardValue<bool> SpawnGuard(bSpawnInProgress, true);
 	const AFlyingBoid* Defaults = EnemyClass->GetDefaultObject<AFlyingBoid>();
 	if (!IsValid(Defaults->CollisionSphere)) return nullptr;

@@ -36,7 +36,6 @@ private:
 	TMap<uint64, int32> ResultOwners;
 	TSharedPtr<const FNavigationGraphSnapshot> CurrentGraph;
 	TArray<uint64> Queue;
-	TArray<FBoidPlannerAgent> CurrentAgents;
 	uint64 NextHandle = 1;
 	int32 Cursor = 0;
 	int32 QueriesLeft = 0;
