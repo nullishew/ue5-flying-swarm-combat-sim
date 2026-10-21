@@ -71,13 +71,12 @@ void USwarmSimulationSubsystem::AdoptNavigationRoute(int32 AgentId, const FVecto
 	State.Mode = NavigationMode;
 	State.RouteGeneration = RouteService->GetGeneration();
 	++State.GoalVersion;
-	for (const FRegisteredAgent& Agent : Agents)
-		if (Agent.Id == AgentId && Agent.Boid.IsValid())
-		{
-			State.IntentRevision = Agent.Boid->GetMovementIntent().Revision;
-			State.IntentOwner = Agent.Boid->GetMovementIntentOwner();
-			State.RouteTarget = Agent.Boid->MovementTarget;
-		}
+	if (FRegisteredAgent* Agent = FindAgentRecord(AgentId); Agent && Agent->Boid.IsValid())
+	{
+		State.IntentRevision = Agent->Boid->GetMovementIntent().Revision;
+		State.IntentOwner = Agent->Boid->GetMovementIntentOwner();
+		State.RouteTarget = Agent->Boid->MovementTarget;
+	}
 }
 
 void USwarmSimulationSubsystem::UpdateNavigationGoals(float DeltaTime)

@@ -9,6 +9,7 @@
 class AFlyingBoidAttackProjectile;
 class USceneComponent;
 class USwarmSimulationSubsystem;
+struct FCollisionQueryParams;
 
 /** Fires while enabled by the Combat StateTree task and ranged movement is active; never moves the boid or completes a StateTree state. */
 UCLASS(ClassGroup=(Boid), meta=(BlueprintSpawnableComponent))
@@ -93,5 +94,6 @@ private:
 	void RefreshSimulationSubscription();
 	void OnSimulationFrame(float DeltaTime);
 	void DetachSimulation();
-	bool ValidateMuzzleAndLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target) const;
+	bool ValidateMuzzle(const FVector& MuzzleLocation, const FCollisionQueryParams& Params) const;
+	bool ValidateLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const;
 };

@@ -68,6 +68,8 @@ void AFlyingBoid::BeginPlay()
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
     if (IsValid(StateTree)) StateTree->SetStartLogicAutomatically(false);
+	// Saved extra colliders must be excluded before Blueprint BeginPlay can launch projectiles.
+	if (USwarmSimulationSubsystem* Simulation = GetWorld()->GetSubsystem<USwarmSimulationSubsystem>()) Simulation->GetCollisionQueries().RefreshBoid(this);
     Super::BeginPlay();
 	// Restore overlap notifications after Blueprint defaults for population sensors.
 	CollisionSphere->SetGenerateOverlapEvents(true);

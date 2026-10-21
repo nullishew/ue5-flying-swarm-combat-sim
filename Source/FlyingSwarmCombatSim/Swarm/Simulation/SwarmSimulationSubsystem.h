@@ -4,6 +4,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "Swarm/Simulation/SwarmSimulationSettings.h"
 #include "Swarm/Simulation/SwarmSpatialIndex.h"
+#include "Swarm/Simulation/SwarmCollisionQueries.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 #include "Templates/UniquePtr.h"
@@ -60,6 +61,17 @@ public:
 	bool CanSpawnBoid() const;
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Population")
 	int32 MaxPopulation = 67;
+	FSwarmCollisionQueries& GetCollisionQueries() { return CollisionQueries; }
+	const FSwarmCollisionQueries& GetCollisionQueries() const { return CollisionQueries; }
+	/** Refreshed by the shared exception cache; ordinary native enemies require no exclusions. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 CollisionExceptionActors = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 LiveAttackProjectiles = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 LastFrameProjectileLaunches = 0;
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Collision Queries")
+	int32 LastFrameVisibilityQueryRebuilds = 0;
 	/** Per-frame work counts, summed over substeps; sample visits include self entries. */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Neighbor Queries")
 	int64 LastFrameNeighborCellsVisited = 0;
@@ -148,6 +160,7 @@ public:
 	TObjectPtr<UBoidSteeringProfile> DefaultSteeringProfile;
 
 private:
+	friend class FSwarmMembershipIndexTest;
 	friend class AFlyingBoid;
 	// Membership requests are exclusively issued by the agent lifecycle.
 	void RegisterBoid(AFlyingBoid* Boid);
@@ -230,6 +243,11 @@ private:
 	TUniquePtr<FBoidCombatMovementCoordinator, FBoidCombatCoordinatorDeleter> CombatCoordinator;
 
 	TArray<FRegisteredAgent> Agents;
+	TMap<TWeakObjectPtr<AFlyingBoid>, int32> AgentIds;
+	TMap<int32, int32> AgentRecordIndices;
+	void RebuildAgentLookups();
+	FRegisteredAgent* FindAgentRecord(int32 AgentId);
+	FSwarmCollisionQueries CollisionQueries;
 	FSwarmSpatialIndex NeighborIndex;
 	TArray<FSwarmSpatialSample> NeighborSamples;
 	TArray<int32> NeighborCandidates;

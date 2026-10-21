@@ -6,7 +6,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/World.h"
-#include "EngineUtils.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Player/FlyingCharacter.h"
 #include "Swarm/FlyingBoid.h"
@@ -44,11 +44,12 @@ void AFlyingBoidAttackProjectile::BeginPlay()
 
 void AFlyingBoidAttackProjectile::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (UWorld* World = GetWorld(); World && ActorSpawnedDelegateHandle.IsValid())
+	if (USwarmSimulationSubsystem* Simulation = CollisionSimulation.Get())
 	{
-		World->RemoveOnActorSpawnedHandler(ActorSpawnedDelegateHandle);
-		ActorSpawnedDelegateHandle.Reset();
+		Simulation->GetCollisionQueries().UnregisterProjectile(CollisionComponent);
+		Simulation->LiveAttackProjectiles = Simulation->GetCollisionQueries().GetProjectileCount();
 	}
+	CollisionSimulation.Reset();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -87,11 +88,11 @@ bool AFlyingBoidAttackProjectile::InitializeLaunch(AFlyingBoid* InShooter, AFlyi
 	CollisionComponent->SetCollisionObjectType(ECC_GameTraceChannel1);
 	ConfigureCollisionResponses();
 	CollisionComponent->IgnoreActorWhenMoving(InShooter, true);
-	RegisterExistingBoidsToIgnore();
-	if (UWorld* World = GetWorld(); World && !ActorSpawnedDelegateHandle.IsValid())
+	if (USwarmSimulationSubsystem* Simulation = GetWorld() ? GetWorld()->GetSubsystem<USwarmSimulationSubsystem>() : nullptr)
 	{
-		ActorSpawnedDelegateHandle = World->AddOnActorSpawnedHandler(
-			FOnActorSpawned::FDelegate::CreateUObject(this, &AFlyingBoidAttackProjectile::HandleActorSpawned));
+		CollisionSimulation = Simulation;
+		Simulation->GetCollisionQueries().RegisterProjectile(CollisionComponent);
+		Simulation->LiveAttackProjectiles = Simulation->GetCollisionQueries().GetProjectileCount();
 	}
 	ProjectileMovement->SetUpdatedComponent(CollisionComponent);
 	ProjectileMovement->InitialSpeed = LaunchSpeed;
@@ -120,6 +121,7 @@ void AFlyingBoidAttackProjectile::SendLaunchPresentationIfReady()
 	ConfigureCollisionResponses();
 	CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	bLaunchPresentationSent = true;
+	if (USwarmSimulationSubsystem* Simulation = CollisionSimulation.Get()) ++Simulation->LastFrameProjectileLaunches;
 	BP_OnProjectileLaunched();
 
 	// Keep the Blueprint hook presentation-only even if a child implementation changes defaults.
@@ -129,7 +131,7 @@ void AFlyingBoidAttackProjectile::SendLaunchPresentationIfReady()
 		CollisionComponent->SetCollisionObjectType(ECC_GameTraceChannel1);
 		ConfigureCollisionResponses();
 		CollisionComponent->IgnoreActorWhenMoving(Shooter.Get(), true);
-		RegisterExistingBoidsToIgnore();
+		if (USwarmSimulationSubsystem* Simulation = CollisionSimulation.Get()) Simulation->GetCollisionQueries().RegisterProjectile(CollisionComponent);
 		CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 		SetActorScale3D(FVector::OneVector);
 		SetActorLocation(LaunchOrigin, false, nullptr, ETeleportType::TeleportPhysics);
@@ -156,23 +158,6 @@ void AFlyingBoidAttackProjectile::HandleBlockingHit(UPrimitiveComponent* HitComp
 		return;
 	}
 	ResolveImpact(Hit, OtherActor == IntendedTarget.Get());
-}
-
-void AFlyingBoidAttackProjectile::RegisterExistingBoidsToIgnore()
-{
-	if (!CollisionComponent || !GetWorld()) return;
-	for (TActorIterator<AFlyingBoid> It(GetWorld()); It; ++It)
-	{
-		if (*It && *It != Shooter.Get()) CollisionComponent->IgnoreActorWhenMoving(*It, true);
-	}
-}
-
-void AFlyingBoidAttackProjectile::HandleActorSpawned(AActor* SpawnedActor)
-{
-	if (AFlyingBoid* Boid = Cast<AFlyingBoid>(SpawnedActor); Boid && Boid != Shooter.Get() && CollisionComponent)
-	{
-		CollisionComponent->IgnoreActorWhenMoving(Boid, true);
-	}
 }
 
 void AFlyingBoidAttackProjectile::ResolveImpact(const FHitResult& Hit, bool bMayDamageIntendedTarget)

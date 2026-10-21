@@ -10,6 +10,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "HAL/PlatformTime.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 namespace
 {
@@ -22,6 +23,23 @@ namespace
 			: FMath::Abs(Range - Settings.PreferredRangeCm);
 		return FMath::FloorToInt(Error / RangeErrorBucketCm);
 	}
+}
+
+const FCollisionQueryParams& FBoidRangedPositionPlanner::GetVisibilityQuery(AFlyingBoid* Boid, AActor* Target) const
+{
+	FVisibilityQuery& Cached = VisibilityQueries.FindOrAdd(Host->GetAgentId(Boid));
+	if (Cached.Generation != VisibilityGeneration || Cached.Target.Get() != Target)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmVisibilityQueryPreparation);
+		++Host->LastFrameVisibilityQueryRebuilds;
+		Cached.Params = FCollisionQueryParams(SCENE_QUERY_STAT(BoidRangedSight), true);
+		Cached.Params.AddIgnoredActor(Boid);
+		Cached.Params.AddIgnoredActor(Target);
+		for (const FBoidPlannerAgent& Agent : ActiveAgents) Cached.Params.AddIgnoredActor(Agent.Boid);
+		Cached.Target = Target;
+		Cached.Generation = VisibilityGeneration;
+	}
+	return Cached.Params;
 }
 
 bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsystem& Runner, AFlyingBoid* Boid,
@@ -42,7 +60,7 @@ bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsyste
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BoidRangedPosition), false);
 	Params.AddIgnoredActor(Boid);
 	Params.AddIgnoredActor(Target);
-	for (const FBoidPlannerAgent& Agent : ActiveAgents) Params.AddIgnoredActor(Agent.Boid);
+	Runner.GetCollisionQueries().AddBodyExceptions(Params);
 	const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
 	++Runner.LastFramePositioningQueries;
 	if (Runner.GetWorld()->OverlapBlockingTestByChannel(Goal, FQuat::Identity, Sphere->GetCollisionObjectType(),
@@ -51,9 +69,9 @@ bool FBoidRangedPositionPlanner::ValidateRangedPosition(USwarmSimulationSubsyste
 		Rejection = TEXT("overlap");
 		return false;
 	}
-	Params.bTraceComplex = true;
+	const FCollisionQueryParams& VisibilityParams = GetVisibilityQuery(Boid, Target);
 	++Runner.LastFramePositioningQueries;
-	if (Runner.GetWorld()->LineTraceTestByChannel(Goal, Center, ECC_Visibility, Params))
+	if (Runner.GetWorld()->LineTraceTestByChannel(Goal, Center, ECC_Visibility, VisibilityParams))
 	{
 		Rejection = TEXT("sight");
 		return false;
@@ -78,7 +96,7 @@ float FBoidRangedPositionPlanner::EvaluateRangedPosition(USwarmSimulationSubsyst
 		FCollisionQueryParams RouteParams(SCENE_QUERY_STAT(BoidRangedDirectRoute), false);
 		RouteParams.AddIgnoredActor(Boid);
 		RouteParams.AddIgnoredActor(Target);
-		for (const FBoidPlannerAgent& Agent : ActiveAgents) RouteParams.AddIgnoredActor(Agent.Boid);
+		Runner.GetCollisionQueries().AddBodyExceptions(RouteParams);
 		const FCollisionResponseParams RouteResponses(Sphere->GetCollisionResponseToChannels());
 		++Runner.LastFramePositioningQueries;
 		if (Runner.GetWorld()->SweepTestByChannel(Boid->GetActorLocation(), Goal, FQuat::Identity,
@@ -91,7 +109,7 @@ float FBoidRangedPositionPlanner::EvaluateRangedPosition(USwarmSimulationSubsyst
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BoidRangedOpenness), false);
 	Params.AddIgnoredActor(Target);
 	Params.AddIgnoredActor(Boid);
-	for (const FBoidPlannerAgent& Agent : ActiveAgents) Params.AddIgnoredActor(Agent.Boid);
+	Runner.GetCollisionQueries().AddBodyExceptions(Params);
 	const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
 	const float Radius = Sphere->GetScaledSphereRadius() + FMath::Max(0.f, Runner.Tuning.ObstacleMarginCm);
 	FTransform Transform;
@@ -173,6 +191,9 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 {
 	Host = &Runner;
 	const double Started = FPlatformTime::Seconds();
+	bool bMembershipChanged = ActiveAgents.Num() != Agents.Num();
+	for (int32 Index = 0; !bMembershipChanged && Index < Agents.Num(); ++Index) bMembershipChanged = ActiveAgents[Index].Id != Agents[Index].Id || ActiveAgents[Index].Boid != Agents[Index].Boid;
+	if (bMembershipChanged) ++VisibilityGeneration;
 	ActiveAgents.Reset(Agents.Num());
 	for (const FBoidPlannerAgent& Agent : Agents) ActiveAgents.Add(Agent);
 	ActiveAgents.Sort([](const FBoidPlannerAgent& A, const FBoidPlannerAgent& B) { return A.Id < B.Id; });
@@ -607,7 +628,7 @@ void FBoidRangedPositionPlanner::Update(USwarmSimulationSubsystem& Runner,
 						FCollisionQueryParams RouteParams(SCENE_QUERY_STAT(BoidRangedDirectCommit), false);
 						RouteParams.AddIgnoredActor(Boid);
 						RouteParams.AddIgnoredActor(Target);
-						for (const FBoidPlannerAgent& Other : ActiveAgents) RouteParams.AddIgnoredActor(Other.Boid);
+						Runner.GetCollisionQueries().AddBodyExceptions(RouteParams);
 						const FCollisionResponseParams RouteResponses(Boid->CollisionSphere->GetCollisionResponseToChannels());
 						++Runner.LastFramePositioningQueries;
 						if (Runner.GetWorld()->SweepTestByChannel(Boid->GetActorLocation(), Best->Position,
@@ -703,5 +724,6 @@ void FBoidRangedPositionPlanner::ResetAgent(int32 AgentId)
 {
 	if (FSearchState* State = RuntimeByAgent.Find(AgentId)) CancelSearch(*State);
 	RuntimeByAgent.Remove(AgentId);
+	VisibilityQueries.Remove(AgentId);
 	Reservations.Remove(AgentId);
 }

@@ -117,6 +117,7 @@ USwarmSimulationSubsystem::USwarmSimulationSubsystem() = default;
 void USwarmSimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	CollisionQueries.Initialize(GetWorld());
 	RangedPositionPlanner.Reset(new FBoidRangedPositionPlanner());
 	CombatCoordinator.Reset(new FBoidCombatMovementCoordinator());
 	RouteService.Reset(new FBoidFlightRouteService());
@@ -234,19 +235,7 @@ void USwarmSimulationSubsystem::FinishShutdown()
 {
 	if (bShutdownComplete) return;
 	bShutdownComplete = true;
-	for (const FRegisteredAgent& Agent : Agents)
-	{
-		if (AFlyingBoid* Boid = Agent.Boid.Get())
-		{
-			for (const FRegisteredAgent& Other : Agents)
-			{
-				if (AFlyingBoid* OtherBoid = Other.Boid.Get(); OtherBoid && OtherBoid != Boid)
-				{
-					Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, false);
-				}
-			}
-		}
-	}
+	CollisionQueries.Reset();
 	// Stop logic while associations still identify this runner. Task exits cannot
 	// reactivate a dead boid, and no queued request can restart a shutting-down runner.
 	for (const FRegisteredAgent& Agent : Agents)
@@ -275,6 +264,8 @@ void USwarmSimulationSubsystem::FinishShutdown()
 		CombatCoordinator->ResetAgent(Agent.Id);
 	}
 	Agents.Reset();
+	AgentIds.Reset();
+	AgentRecordIndices.Reset();
 	PendingAdditions.Reset();
 	PendingRemovals.Reset();
 	WanderBounds = nullptr;
@@ -292,7 +283,9 @@ void USwarmSimulationSubsystem::RegisterBoid(AFlyingBoid* Boid)
 		return;
 	}
 	const TWeakObjectPtr<AFlyingBoid> WeakBoid(Boid);
+	CollisionQueries.RefreshBoid(Boid);
 	PendingRemovals.Remove(WeakBoid);
+	if (GetAgentId(Boid) != INDEX_NONE) CollisionQueries.RegisterMovementBody(Boid);
 	if (GetAgentId(Boid) == INDEX_NONE && !PendingAdditions.Contains(WeakBoid))
 	{
 		PendingAdditions.Add(WeakBoid);
@@ -306,15 +299,7 @@ void USwarmSimulationSubsystem::UnregisterBoid(AFlyingBoid* Boid)
 		return;
 	}
 	const TWeakObjectPtr<AFlyingBoid> WeakBoid(Boid);
-	// EndPlay may invalidate the weak handle before the next safe boundary.
-	for (const FRegisteredAgent& Other : Agents)
-	{
-		if (AFlyingBoid* OtherBoid = Other.Boid.Get(); OtherBoid && OtherBoid != Boid)
-		{
-			OtherBoid->CollisionSphere->IgnoreActorWhenMoving(Boid, false);
-			Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, false);
-		}
-	}
+	CollisionQueries.UnregisterMovementBody(Boid);
 	PendingAdditions.Remove(WeakBoid);
 	if (GetAgentId(Boid) == INDEX_NONE)
 	{
@@ -329,15 +314,26 @@ void USwarmSimulationSubsystem::UnregisterBoid(AFlyingBoid* Boid)
 
 int32 USwarmSimulationSubsystem::GetAgentId(const AFlyingBoid* Boid) const
 {
-	if (!Boid) return INDEX_NONE;
-	for (const FRegisteredAgent& Agent : Agents)
+	if (!IsValid(Boid)) return INDEX_NONE;
+	const int32* Id = AgentIds.Find(TWeakObjectPtr<AFlyingBoid>(const_cast<AFlyingBoid*>(Boid)));
+	return Id ? *Id : INDEX_NONE;
+}
+
+void USwarmSimulationSubsystem::RebuildAgentLookups()
+{
+	AgentIds.Reset();
+	AgentRecordIndices.Reset();
+	for (int32 Index = 0; Index < Agents.Num(); ++Index)
 	{
-		if (Agent.Boid.Get() == Boid)
-		{
-			return Agent.Id;
-		}
+		AgentIds.Add(Agents[Index].Boid, Agents[Index].Id);
+		AgentRecordIndices.Add(Agents[Index].Id, Index);
 	}
-	return INDEX_NONE;
+}
+
+USwarmSimulationSubsystem::FRegisteredAgent* USwarmSimulationSubsystem::FindAgentRecord(int32 AgentId)
+{
+	const int32* Index = AgentRecordIndices.Find(AgentId);
+	return Index && Agents.IsValidIndex(*Index) && Agents[*Index].Id == AgentId ? &Agents[*Index] : nullptr;
 }
 
 bool USwarmSimulationSubsystem::IsInsideSafeBounds(const FVector& Position, float BoidRadius) const
@@ -356,21 +352,21 @@ bool USwarmSimulationSubsystem::IsInsideSafeBounds(const FVector& Position, floa
 
 void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 {
-	TArray<TWeakObjectPtr<AFlyingBoid>> Removals = MoveTemp(PendingRemovals);
+	TSet<TWeakObjectPtr<AFlyingBoid>> Removals;
+	for (const auto& Weak : PendingRemovals) Removals.Add(Weak);
 	PendingRemovals.Reset();
 	// Detach records before invoking StateTree exits, which can destroy actors or end the world.
 	TArray<FRegisteredAgent> RemovedAgents;
+	TSet<int32> RemovedIds;
 	for (const FRegisteredAgent& Agent : Agents)
 	{
-		if (!Agent.Boid.IsValid() || !Agent.Boid->IsAlive() || Removals.Contains(Agent.Boid)) RemovedAgents.Add(Agent);
+		if (!Agent.Boid.IsValid() || !Agent.Boid->IsAlive() || Removals.Contains(Agent.Boid)) { RemovedAgents.Add(Agent); RemovedIds.Add(Agent.Id); }
 	}
-	Agents.RemoveAll([&RemovedAgents](const FRegisteredAgent& Agent)
+	if (!RemovedAgents.IsEmpty())
 	{
-		return RemovedAgents.ContainsByPredicate([&Agent](const FRegisteredAgent& Removed)
-		{
-			return Removed.Id == Agent.Id;
-		});
-	});
+		Agents.RemoveAll([&RemovedIds](const FRegisteredAgent& Agent) { return RemovedIds.Contains(Agent.Id); });
+		RebuildAgentLookups();
+	}
 	for (const FRegisteredAgent& Removed : RemovedAgents)
 	{
 		if (bEndingPlay) return;
@@ -380,14 +376,7 @@ void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 		NavigationAgents.Remove(Removed.Id);
 		AFlyingBoid* Boid = Removed.Boid.Get();
 		if (!Boid) continue;
-		for (const FRegisteredAgent& Other : Agents)
-		{
-			if (AFlyingBoid* OtherBoid = Other.Boid.Get())
-			{
-				OtherBoid->CollisionSphere->IgnoreActorWhenMoving(Boid, false);
-				Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, false);
-			}
-		}
+		CollisionQueries.UnregisterMovementBody(Boid);
 		if (IsValid(Boid->AttackComponent)) Boid->AttackComponent->DeactivateCombatContext(0);
 		Boid->SetWanderActive(false);
 		if (IsValid(Boid->StateTree) && Boid->StateTree->IsRunning()) Boid->StateTree->StopLogic(TEXT("Unregistered"));
@@ -419,6 +408,8 @@ void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 		FRegisteredAgent& Agent = Agents.AddDefaulted_GetRef();
 		Agent.Boid = WeakBoid;
 		Agent.Id = NextAgentId++;
+		AgentIds.Add(WeakBoid, Agent.Id);
+		AgentRecordIndices.Add(Agent.Id, Agents.Num() - 1);
 		Boid->InitializeWander(Agent.Id, Tuning.InitialSeed);
 		if (Tuning.CruiseSpeedCmPerSec <= 0.0f || Boid->MaxSpeedCmPerSec <= 0.0f
 			|| Boid->MaxAccelerationCmPerSec2 * Tuning.AccelerationScale <= 0.0f)
@@ -426,14 +417,7 @@ void USwarmSimulationSubsystem::ApplyQueuedRegistrations()
 			UE_LOG(LogTemp, Warning, TEXT("Boid %s cannot cruise with zero speed or acceleration settings."),
 			       *Boid->GetName());
 		}
-		for (const FRegisteredAgent& Other : Agents)
-		{
-			if (AFlyingBoid* OtherBoid = Other.Boid.Get(); OtherBoid && OtherBoid != Boid)
-			{
-				Boid->CollisionSphere->IgnoreActorWhenMoving(OtherBoid, true);
-				OtherBoid->CollisionSphere->IgnoreActorWhenMoving(Boid, true);
-			}
-		}
+		CollisionQueries.RegisterMovementBody(Boid);
 		const FVector SafeExtent = WanderBounds->GetScaledBoxExtent()
 			- FVector(Boid->CollisionSphere->GetScaledSphereRadius() + FMath::Max(0.0f, Tuning.BoundsMarginCm));
 		if (SafeExtent.GetMin() <= BoidFlight::ContactSkinCm)
@@ -465,11 +449,7 @@ void USwarmSimulationSubsystem::InitializePendingLogic()
 		AFlyingBoid* Boid = Weak.Get();
 		if (!CanSimulate()) break;
 		if (!IsAgentRegistered(Boid)) continue;
-		for (FRegisteredAgent& Agent : Agents) if (Agent.Boid == Weak)
-		{
-			Agent.bLogicStarted = true;
-			break;
-		}
+		if (FRegisteredAgent* Agent = FindAgentRecord(GetAgentId(Boid))) Agent->bLogicStarted = true;
 		if (IsValid(Boid->StateTree)) Boid->StateTree->StartLogic();
 	}
 }
@@ -480,6 +460,10 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 	if (bFrameActive || bEndingPlay) return;
 	LastFrameNeighborCellsVisited = LastFrameNeighborSamplesExamined = LastFrameNeighborPairChecks = 0;
 	LastFrameNeighborWallTraces = LastFrameAcceptedNeighbors = LastFrameMovementSubsteps = 0;
+	LastFrameProjectileLaunches = LastFrameVisibilityQueryRebuilds = 0;
+	CollisionQueries.Refresh();
+	CollisionExceptionActors = CollisionQueries.GetExceptionCount();
+	LiveAttackProjectiles = CollisionQueries.GetProjectileCount();
 	bFrameActive = true;
 	ON_SCOPE_EXIT
 	{
@@ -660,10 +644,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 					                              Snapshot.Radius + FMath::Max(0.f, Tuning.ObstacleMarginCm))
 					    : !IsDirectGoalClear(Snapshot.Goal));
 		}
-		FRegisteredAgent* Record = Agents.FindByPredicate([&](const FRegisteredAgent& Agent)
-		{
-			return Agent.Id == Snapshot.Id;
-		});
+		FRegisteredAgent* Record = FindAgentRecord(Snapshot.Id);
 		if (!Record)
 		{
 			continue;
@@ -1092,12 +1073,9 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			                                static_cast<int64>(Outputs[Index].Constraint)));
 		float StalledSeconds = 0.0f;
 		int32 RecoveryCount = 0;
-		for (FRegisteredAgent& Agent : Agents)
+		if (FRegisteredAgent* Record = FindAgentRecord(Snapshots[Index].Id))
 		{
-			if (Agent.Id != Snapshots[Index].Id)
-			{
-				continue;
-			}
+			FRegisteredAgent& Agent = *Record;
 			if (Agent.IntentRevision != Snapshots[Index].MovementIntent.Revision
 				|| Agent.ProgressTarget != Snapshots[Index].TargetActor
 				|| Agent.bProgressRetreating != Snapshots[Index].bRetreating)
@@ -1153,6 +1131,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 				}
 				if (Agent.NoProgressSeconds >= FMath::Max(0.1f, Tuning.StuckProgressSeconds))
 				{
+					Agent.NoProgressSeconds = 0.0f;
 					Boid->HoldAvoidanceDirection(FVector::ZeroVector, 0.0f);
 					++Agent.RecoveryCount;
 					if (Snapshots[Index].bPlannerControlled)
@@ -1176,16 +1155,17 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 						       *Boid->GetName());
 					}
 					if (!CanSimulate() || !IsAgentRegistered(Boid)) return;
-					Agent.NoProgressSeconds = 0.0f;
 				}
 			}
 			else
 			{
 				Agent.NoProgressSeconds = Agent.ProgressWindowSeconds = Agent.ProgressDistanceCm = 0.0f;
 			}
-			StalledSeconds = Agent.NoProgressSeconds;
-			RecoveryCount = Agent.RecoveryCount;
-			break;
+			if (const FRegisteredAgent* Current = FindAgentRecord(Snapshots[Index].Id))
+			{
+				StalledSeconds = Current->NoProgressSeconds;
+				RecoveryCount = Current->RecoveryCount;
+			}
 		}
 		if (bDrawSteering && Boid == Selected)
 		{

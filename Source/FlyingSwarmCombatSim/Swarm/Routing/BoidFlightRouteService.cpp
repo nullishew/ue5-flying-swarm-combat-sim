@@ -135,9 +135,8 @@ void FBoidFlightRouteService::InvalidateGraph()
 	}
 }
 
-void FBoidFlightRouteService::BeginFrame(USwarmSimulationSubsystem* Runner, TConstArrayView<FBoidPlannerAgent> Agents)
+void FBoidFlightRouteService::BeginFrame(USwarmSimulationSubsystem* Runner, TConstArrayView<FBoidPlannerAgent>)
 {
-	CurrentAgents.Reset(); for (const auto& Agent : Agents) CurrentAgents.Add(Agent);
 	RefreshGraph(Runner);
 	QueriesLeft = Runner ? FMath::Max(0, Runner->RouteQueriesPerFrame) : 32;
 	ExpansionsLeft = Runner ? FMath::Max(0, Runner->RouteExpansionsPerFrame) : 64;
@@ -175,7 +174,7 @@ bool FBoidFlightRouteService::ValidateSegment(USwarmSimulationSubsystem& Runner,
 	const AFlyingBoid* Boid = Request.Boid.Get(); if (!Boid || !Boid->CollisionSphere) return false;
 	--QueriesLeft; if (bValidatingActiveSegment) --ActiveQueriesLeft; else --SearchQueriesLeft; ++Runner.LastFrameRouteQueries;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BoidRouteSegment), false); Params.AddIgnoredActor(Boid); Params.AddIgnoredActor(Request.IgnoreTarget.Get());
-	for (const auto& Agent : CurrentAgents) if (Agent.Boid) Params.AddIgnoredActor(Agent.Boid);
+	Runner.GetCollisionQueries().AddBodyExceptions(Params);
 	const auto Shape = FCollisionShape::MakeSphere(Radius);
 	const FCollisionResponseParams Responses(Boid->CollisionSphere->GetCollisionResponseToChannels());
 	Params.bFindInitialOverlaps = true;

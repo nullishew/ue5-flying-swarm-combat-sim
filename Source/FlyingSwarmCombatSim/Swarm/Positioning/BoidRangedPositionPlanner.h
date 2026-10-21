@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CollisionQueryParams.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 
@@ -92,6 +93,15 @@ private:
     float ScorePosition(AFlyingBoid* Boid, const FVector& Goal, const FVector& Center, float Open,
         float TravelLength, const FBoidRangedSettings& Settings, float* OutSeedAffinity = nullptr) const;
     void CancelSearch(FSearchState& State);
+	const FCollisionQueryParams& GetVisibilityQuery(AFlyingBoid* Boid, AActor* Target) const;
+	struct FVisibilityQuery
+	{
+		FCollisionQueryParams Params;
+		TWeakObjectPtr<AActor> Target;
+		uint64 Generation = MAX_uint64;
+	};
+	mutable TMap<int32, FVisibilityQuery> VisibilityQueries;
+	uint64 VisibilityGeneration = 0;
 
     TMap<int32, FSearchState> RuntimeByAgent;
     TMap<int32, FVector> Reservations;
