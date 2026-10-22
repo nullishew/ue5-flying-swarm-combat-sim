@@ -61,13 +61,16 @@ void AFlyingSwarmCombatSimPlayerController::RefreshCombatHUD()
 	if (!IsLocalPlayerController()) return;
 	// Preserve the existing Blueprint HUD; its base class is not a compatibility test.
 	UClass* DesiredClass = CombatHUDWidgetClass.Get();
-	if (!DesiredClass) DesiredClass = LoadClass<UUserWidget>(nullptr, TEXT("/Game/Player/WBP_FlyingCombatHUD.WBP_FlyingCombatHUD_C"));
+	if (!DesiredClass)
+		DesiredClass = LoadClass<UUserWidget>(
+			nullptr, TEXT("/Game/Player/WBP_FlyingCombatHUD.WBP_FlyingCombatHUD_C"));
 	if (CombatHUDWidget && CombatHUDWidget->GetClass() != DesiredClass)
 	{
 		CombatHUDWidget->RemoveFromParent();
 		CombatHUDWidget = nullptr;
 	}
-	if (!CombatHUDWidget && Cast<AFlyingCharacter>(GetPawn()) && DesiredClass && !DesiredClass->HasAnyClassFlags(CLASS_Abstract))
+	if (!CombatHUDWidget && Cast<AFlyingCharacter>(GetPawn()) && DesiredClass && !DesiredClass->HasAnyClassFlags(
+		CLASS_Abstract))
 	{
 		CombatHUDWidget = CreateWidget<UUserWidget>(this, DesiredClass);
 		if (CombatHUDWidget)
@@ -114,31 +117,35 @@ void AFlyingSwarmCombatSimPlayerController::BeginPlay()
 void AFlyingSwarmCombatSimPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
-	if (IsLocalPlayerController() && InputComponent && DebugBoundInput.Get() != InputComponent)
-	{
-		DebugBoundInput = InputComponent;
-		bDebugAwarenessBindingReady = false;
-		bDebugSpatialBindingReady = false;
-	}
-	if (IsLocalPlayerController())
-	{
-		if (auto* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent))
-		{
-			// The owning action asset must enable Consume Input; shared assets are never mutated here.
-			if (!bDebugAwarenessBindingReady && ToggleAwarenessAction && ToggleAwarenessAction->ValueType == EInputActionValueType::Boolean)
-			{
-				EnhancedInput->BindAction(ToggleAwarenessAction, ETriggerEvent::Started, this, &ThisClass::ToggleSwarmAwareness);
-				bDebugAwarenessBindingReady = true;
-			}
-			if (!bDebugSpatialBindingReady && ToggleSpatialAction && ToggleSpatialAction->ValueType == EInputActionValueType::Boolean)
-			{
-				EnhancedInput->BindAction(ToggleSpatialAction, ETriggerEvent::Started, this, &ThisClass::ToggleSwarmSpatial);
-				bDebugSpatialBindingReady = true;
-			}
-		}
-	}
+	if (!IsLocalPlayerController()) return;
+	TryBindDebugInput();
 	TryBindRunInput();
 	TryInstallContexts(false);
+}
+
+void AFlyingSwarmCombatSimPlayerController::TryBindDebugInput()
+{
+	auto* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent);
+	if (!EnhancedInput || DebugBoundInput.Get() == InputComponent) return;
+	DebugBoundInput = InputComponent;
+
+	if (ToggleSwarmStateDebugAction && ToggleSwarmStateDebugAction->ValueType == EInputActionValueType::Boolean)
+	{
+		EnhancedInput->BindAction(ToggleSwarmStateDebugAction, ETriggerEvent::Started, this,
+		                          &ThisClass::ToggleSwarmStateDebug);
+	}
+	if (ToggleSwarmSpatialDebugAction && ToggleSwarmSpatialDebugAction->
+		ValueType == EInputActionValueType::Boolean)
+	{
+		EnhancedInput->BindAction(ToggleSwarmSpatialDebugAction, ETriggerEvent::Started, this,
+		                          &ThisClass::ToggleSwarmSpatialDebug);
+	}
+	if (ToggleSwarmCollisionDebugAction && ToggleSwarmCollisionDebugAction
+		->ValueType == EInputActionValueType::Boolean)
+	{
+		EnhancedInput->BindAction(ToggleSwarmCollisionDebugAction, ETriggerEvent::Started, this,
+		                          &ThisClass::ToggleSwarmCollisionDebug);
+	}
 }
 
 void AFlyingSwarmCombatSimPlayerController::EnsureSpectatorInputDefaults()
@@ -156,16 +163,24 @@ void AFlyingSwarmCombatSimPlayerController::EnsureSpectatorInputDefaults()
 			if (!SourceContext) return;
 			for (const FEnhancedActionKeyMapping& Mapping : SourceContext->GetMappings())
 			{
-				if ((Mapping.Action == SpectatorMoveAction || Mapping.Action == SpectatorLookAction) && !SpectatorMappingContext->GetMappings().ContainsByPredicate([&Mapping](const FEnhancedActionKeyMapping& Existing) { return Existing.Equals<false>(Mapping); }))
+				if ((Mapping.Action == SpectatorMoveAction || Mapping.Action == SpectatorLookAction) && !
+					SpectatorMappingContext->GetMappings().ContainsByPredicate(
+						[&Mapping](const FEnhancedActionKeyMapping& Existing)
+						{
+							return Existing.Equals<false>(Mapping);
+						}))
 				{
 					// Copy keys/modifiers/triggers into a private context; never edit the authored IMC.
-					FEnhancedActionKeyMapping& CopiedMapping = SpectatorMappingContext->MapKey(Mapping.Action, Mapping.Key);
+					FEnhancedActionKeyMapping& CopiedMapping = SpectatorMappingContext->MapKey(
+						Mapping.Action, Mapping.Key);
 					CopiedMapping = Mapping;
 				}
 			}
 		};
 		for (const UInputMappingContext* Context : DefaultMappingContexts) CopyViewMappings(Context);
-		if (!ShouldUseTouchControls()) for (const UInputMappingContext* Context : MobileExcludedMappingContexts) CopyViewMappings(Context);
+		if (!ShouldUseTouchControls())
+			for (const UInputMappingContext* Context : MobileExcludedMappingContexts)
+				CopyViewMappings(Context);
 	}
 }
 
@@ -175,18 +190,26 @@ void AFlyingSwarmCombatSimPlayerController::TryStartRun()
 	auto* PlayerCharacter = Cast<AFlyingCharacter>(GetPawn());
 	// New HUDs and post-death input assets must not gate the existing gameplay controls.
 	if (!Mode || Mode->GetGameRunState() != EGameRunState::Starting || !bMappingsReady || !HasGameFocus()) return;
-	if (!PlayerCharacter || !PlayerCharacter->HasActorBegunPlay() || !PlayerCharacter->InputComponent || !PlayerCharacter->IsAlive()) return;
+	if (!PlayerCharacter || !PlayerCharacter->HasActorBegunPlay() || !PlayerCharacter->InputComponent || !
+		PlayerCharacter->IsAlive())
+		return;
 	auto HasGameplayAction = [this](const UInputAction* Action)
 	{
 		if (!Action) return false;
 		for (const UInputMappingContext* Context : OwnedContexts)
 		{
 			if (Context == SessionMappingContext) continue;
-			if (Context->GetMappings().ContainsByPredicate([Action](const FEnhancedActionKeyMapping& Mapping) { return Mapping.Action == Action; })) return true;
+			if (Context->GetMappings().ContainsByPredicate([Action](const FEnhancedActionKeyMapping& Mapping)
+			{
+				return Mapping.Action == Action;
+			}))
+				return true;
 		}
 		return false;
 	};
-	if (!HasGameplayAction(PlayerCharacter->MoveAction) || !HasGameplayAction(PlayerCharacter->LookAction) || !HasGameplayAction(PlayerCharacter->FireAction)) return;
+	if (!HasGameplayAction(PlayerCharacter->MoveAction) || !HasGameplayAction(PlayerCharacter->LookAction) || !
+		HasGameplayAction(PlayerCharacter->FireAction))
+		return;
 	if (Mode->BeginRun(this, PlayerCharacter) && RunHUD()) RunHUD()->SetRunMessage(FText::GetEmpty());
 }
 
@@ -203,7 +226,9 @@ void AFlyingSwarmCombatSimPlayerController::TryBindRunInput()
 		bRetryBindingReady = true;
 	}
 	if (bSpectatorBindingsReady || !SpectatorMoveAction || !SpectatorLookAction) return;
-	if (SpectatorMoveAction->ValueType != EInputActionValueType::Axis2D || SpectatorLookAction->ValueType != EInputActionValueType::Axis2D) return;
+	if (SpectatorMoveAction->ValueType != EInputActionValueType::Axis2D || SpectatorLookAction->ValueType !=
+		EInputActionValueType::Axis2D)
+		return;
 	Input->BindAction(SpectatorMoveAction, ETriggerEvent::Triggered, this, &ThisClass::SpectatorMove);
 	Input->BindAction(SpectatorLookAction, ETriggerEvent::Triggered, this, &ThisClass::SpectatorLook);
 	bSpectatorBindingsReady = true;
@@ -225,10 +250,13 @@ bool AFlyingSwarmCombatSimPlayerController::TryInstallContexts(bool bSpectating)
 	if (!Input || !Input->GetPlayerInput()) return false;
 	auto HasMapping = [](const UInputMappingContext* Context, const UInputAction* Action)
 	{
-		return Context && Action && Context->GetMappings().ContainsByPredicate([Action](const FEnhancedActionKeyMapping& Mapping) { return Mapping.Action == Action; });
+		return Context && Action && Context->GetMappings().ContainsByPredicate(
+			[Action](const FEnhancedActionKeyMapping& Mapping) { return Mapping.Action == Action; });
 	};
 	// Validate post-death controls only when entering that phase, never before installing gameplay IMCs.
-	if (bSpectating && (!bSpectatorBindingsReady || !HasMapping(SpectatorMappingContext, SpectatorMoveAction) || !HasMapping(SpectatorMappingContext, SpectatorLookAction))) return false;
+	if (bSpectating && (!bSpectatorBindingsReady || !HasMapping(SpectatorMappingContext, SpectatorMoveAction) || !
+		HasMapping(SpectatorMappingContext, SpectatorLookAction)))
+		return false;
 	TArray<UInputMappingContext*> Contexts;
 	if (bRetryBindingReady && HasMapping(SessionMappingContext, RetryAction)) Contexts.Add(SessionMappingContext);
 	if (bSpectating)
@@ -240,12 +268,19 @@ bool AFlyingSwarmCombatSimPlayerController::TryInstallContexts(bool bSpectating)
 		for (UInputMappingContext* Context : DefaultMappingContexts) if (IsValid(Context)) Contexts.AddUnique(Context);
 		if (!ShouldUseTouchControls())
 		{
-			for (UInputMappingContext* Context : MobileExcludedMappingContexts) if (IsValid(Context)) Contexts.AddUnique(Context);
+			for (UInputMappingContext* Context : MobileExcludedMappingContexts)
+				if (IsValid(Context))
+					Contexts.
+						AddUnique(Context);
 		}
 	}
 	if (IsValid(DebugMappingContext)) Contexts.AddUnique(DebugMappingContext);
 	if (Contexts.IsEmpty()) return false;
-	if (!bSpectating && !Contexts.ContainsByPredicate([this](const UInputMappingContext* Context) { return Context != SessionMappingContext; })) return false;
+	if (!bSpectating && !Contexts.ContainsByPredicate([this](const UInputMappingContext* Context)
+	{
+		return Context != SessionMappingContext;
+	}))
+		return false;
 	RemoveOwnedContexts();
 	bControlsArmed = false;
 	ReleaseKeys.Reset();
@@ -254,7 +289,8 @@ bool AFlyingSwarmCombatSimPlayerController::TryInstallContexts(bool bSpectating)
 	Options.bIgnoreAllPressedKeysUntilRelease = true;
 	for (UInputMappingContext* Context : Contexts)
 	{
-		Input->AddMappingContext(Context, Context == DebugMappingContext ? 20 : Context == SessionMappingContext ? 10 : 0, Options);
+		Input->AddMappingContext(
+			Context, Context == DebugMappingContext ? 20 : Context == SessionMappingContext ? 10 : 0, Options);
 		OwnedContexts.Add(Context);
 		for (const FEnhancedActionKeyMapping& Mapping : Context->GetMappings())
 		{
@@ -292,12 +328,15 @@ void AFlyingSwarmCombatSimPlayerController::PlayerTick(float DeltaTime)
 	{
 		bControlsArmed = false;
 		FlushPressedKeys();
-		if (GetPawn() && GetPawn()->GetMovementComponent()) GetPawn()->GetMovementComponent()->StopMovementImmediately();
+		if (GetPawn() && GetPawn()->GetMovementComponent())
+			GetPawn()->GetMovementComponent()->
+			           StopMovementImmediately();
 	}
 	if (IsLocalPlayerController())
 	{
 		TryBindRunInput();
-		if (!bMappingsReady && (!RunMode() || RunMode()->GetGameRunState() == EGameRunState::Starting)) TryInstallContexts(false);
+		if (!bMappingsReady && (!RunMode() || RunMode()->GetGameRunState() == EGameRunState::Starting))
+			TryInstallContexts(false);
 		TryStartRun();
 	}
 	Super::PlayerTick(DeltaTime);
@@ -312,8 +351,12 @@ void AFlyingSwarmCombatSimPlayerController::PlayerTick(float DeltaTime)
 		EnterSpectator();
 	}
 	const bool bSpectating = Mode->GetGameRunState() == EGameRunState::Spectating;
-	if ((!bMappingsReady || bUsingSpectatorContexts != bSpectating) && Mode->GetGameRunState() != EGameRunState::Restarting) TryInstallContexts(bSpectating);
-	if (!bControlsArmed && bMappingsReady && AllRunKeysReleased() && Mode->GetGameRunState() != EGameRunState::Restarting) bControlsArmed = true;
+	if ((!bMappingsReady || bUsingSpectatorContexts != bSpectating) && Mode->GetGameRunState() !=
+		EGameRunState::Restarting)
+		TryInstallContexts(bSpectating);
+	if (!bControlsArmed && bMappingsReady && AllRunKeysReleased() && Mode->GetGameRunState() !=
+		EGameRunState::Restarting)
+		bControlsArmed = true;
 	TryStartRun();
 	PresentHUD();
 }
@@ -344,14 +387,17 @@ void AFlyingSwarmCombatSimPlayerController::PresentHUD()
 void AFlyingSwarmCombatSimPlayerController::PlayHitFeedback()
 {
 	if (!IsLocalPlayerController()) return;
-	if (auto* CameraManager = Cast<AFlyingSwarmCombatSimCameraManager>(PlayerCameraManager)) CameraManager->PlayHitShake(ShakeDegrees, ShakeSeconds);
+	if (auto* CameraManager = Cast<AFlyingSwarmCombatSimCameraManager>(PlayerCameraManager))
+		CameraManager->
+			PlayHitShake(ShakeDegrees, ShakeSeconds);
 	if (!HitVignetteMaterial) return;
 	if (!HitFeedbackWidget)
 	{
 		HitFeedbackWidget = CreateWidget<UHitFeedbackWidget>(this);
 		if (HitFeedbackWidget)
 		{
-			HitFeedbackWidget->Configure(HitVignetteMaterial, HitColor, VignetteOpacity, VignetteFadeInSeconds, VignetteFadeOutSeconds);
+			HitFeedbackWidget->Configure(HitVignetteMaterial, HitColor, VignetteOpacity, VignetteFadeInSeconds,
+			                             VignetteFadeOutSeconds);
 			HitFeedbackWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 			HitFeedbackWidget->AddToPlayerScreen(9);
 		}
@@ -385,7 +431,8 @@ void AFlyingSwarmCombatSimPlayerController::EnterSpectator()
 	TryInstallContexts(true);
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	ASpectatorPlayer* CameraPawn = GetWorld()->SpawnActor<ASpectatorPlayer>(ASpectatorPlayer::StaticClass(), DeathLocation, DeathRotation, Params);
+	ASpectatorPlayer* CameraPawn = GetWorld()->SpawnActor<ASpectatorPlayer>(
+		ASpectatorPlayer::StaticClass(), DeathLocation, DeathRotation, Params);
 	bool bRetainOldView = false;
 	if (CameraPawn)
 	{
@@ -396,7 +443,8 @@ void AFlyingSwarmCombatSimPlayerController::EnterSpectator()
 	}
 	else
 	{
-		FallbackCamera = GetWorld()->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), DeathLocation, DeathRotation, Params);
+		FallbackCamera = GetWorld()->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), DeathLocation, DeathRotation,
+		                                                      Params);
 		UnPossess();
 		if (FallbackCamera)
 		{
@@ -420,13 +468,18 @@ void AFlyingSwarmCombatSimPlayerController::EnterSpectator()
 
 void AFlyingSwarmCombatSimPlayerController::SpectatorMove(const FInputActionValue& Value)
 {
-	if (!bControlsArmed || !HasGameFocus() || !RunMode() || RunMode()->GetGameRunState() != EGameRunState::Spectating) return;
-	if (auto* SpectatorCameraPawn = Cast<ASpectatorPlayer>(GetPawn())) SpectatorCameraPawn->MoveView(Value.Get<FVector2D>());
+	if (!bControlsArmed || !HasGameFocus() || !RunMode() || RunMode()->GetGameRunState() != EGameRunState::Spectating)
+		return;
+	if (auto* SpectatorCameraPawn = Cast<ASpectatorPlayer>(GetPawn()))
+		SpectatorCameraPawn->MoveView(
+			Value.Get<FVector2D>());
 }
 
 void AFlyingSwarmCombatSimPlayerController::SpectatorLook(const FInputActionValue& Value)
 {
-	if (!bControlsArmed || !HasGameFocus() || !Cast<ASpectatorPlayer>(GetPawn()) || !RunMode() || RunMode()->GetGameRunState() != EGameRunState::Spectating) return;
+	if (!bControlsArmed || !HasGameFocus() || !Cast<ASpectatorPlayer>(GetPawn()) || !RunMode() || RunMode()->
+		GetGameRunState() != EGameRunState::Spectating)
+		return;
 	const FVector2D Axis = Value.Get<FVector2D>();
 	AddYawInput(Axis.X);
 	AddPitchInput(Axis.Y);
@@ -440,7 +493,9 @@ void AFlyingSwarmCombatSimPlayerController::RequestRetry()
 	if (MapName.IsEmpty())
 	{
 		Mode->CancelRestart();
-		if (RunHUD()) RunHUD()->SetRunMessage(FText::FromString(TEXT("Cannot resolve current map. Press R to try again.")));
+		if (RunHUD())
+			RunHUD()->SetRunMessage(
+				FText::FromString(TEXT("Cannot resolve current map. Press R to try again.")));
 		return;
 	}
 	bControlsArmed = false;
@@ -449,7 +504,8 @@ void AFlyingSwarmCombatSimPlayerController::RequestRetry()
 	UGameplayStatics::OpenLevel(this, FName(*MapName), true);
 }
 
-void AFlyingSwarmCombatSimPlayerController::HandleTravelFailure(UWorld* World, ETravelFailure::Type Type, const FString& Error)
+void AFlyingSwarmCombatSimPlayerController::HandleTravelFailure(UWorld* World, ETravelFailure::Type Type,
+                                                                const FString& Error)
 {
 	if (World != GetWorld() || !RunMode() || RunMode()->GetGameRunState() != EGameRunState::Restarting) return;
 	RunMode()->CancelRestart();
@@ -489,18 +545,35 @@ void AFlyingSwarmCombatSimPlayerController::EndPlay(const EEndPlayReason::Type E
 	Super::EndPlay(EndPlayReason);
 }
 
-void AFlyingSwarmCombatSimPlayerController::ToggleSwarmAwareness()
+void AFlyingSwarmCombatSimPlayerController::ToggleSwarmStateDebug()
 {
 	if (!IsLocalPlayerController() || !HasGameFocus()) return;
-	bSwarmAwareness = !bSwarmAwareness;
-	if (!bSwarmAwareness && !bSwarmSpatial) StopSwarmDebug();
+	bSwarmState = !bSwarmState;
+	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) StopSwarmDebug();
 }
 
-void AFlyingSwarmCombatSimPlayerController::ToggleSwarmSpatial()
+void AFlyingSwarmCombatSimPlayerController::ToggleSwarmSpatialDebug()
 {
 	if (!IsLocalPlayerController() || !HasGameFocus()) return;
 	bSwarmSpatial = !bSwarmSpatial;
-	if (!bSwarmAwareness && !bSwarmSpatial) StopSwarmDebug();
+	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) StopSwarmDebug();
+}
+
+void AFlyingSwarmCombatSimPlayerController::ToggleSwarmCollisionDebug()
+{
+	if (!IsLocalPlayerController() || !HasGameFocus()) return;
+	bSwarmCollision = !bSwarmCollision;
+	if (!bSwarmCollision) DisableCollision();
+	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) StopSwarmDebug();
+}
+
+void AFlyingSwarmCombatSimPlayerController::DisableCollision()
+{
+	if (SwarmDebugPresenter) SwarmDebugPresenter->DisableCollision();
+	if (auto* Camera = DebugCameraManager.Get()) Camera->SetSwarmDebugBlendable(nullptr);
+	DebugCameraManager.Reset();
+	DebugOutlineMaterial = nullptr;
+	DebugOutlineSource.Reset();
 }
 
 void AFlyingSwarmCombatSimPlayerController::StopSwarmDebug()
@@ -511,16 +584,13 @@ void AFlyingSwarmCombatSimPlayerController::StopSwarmDebug()
 		SwarmDebugOverlay->ClearFrame();
 		SwarmDebugOverlay->SetVisibility(ESlateVisibility::Collapsed);
 	}
-	if (auto* Camera = DebugCameraManager.Get()) Camera->SetSwarmDebugBlendable(nullptr);
-	DebugCameraManager.Reset();
-	DebugOutlineMaterial = nullptr;
-	DebugOutlineSource.Reset();
+	DisableCollision();
 }
 
 void AFlyingSwarmCombatSimPlayerController::UpdateSwarmDebug(UWorld* World, ELevelTick TickType, float DeltaSeconds)
 {
 	if (World != GetWorld() || !IsLocalPlayerController() || IsActorBeingDestroyed()) return;
-	if (!bSwarmAwareness && !bSwarmSpatial) return;
+	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) return;
 	if (!SwarmDebugPresenter) SwarmDebugPresenter.Reset(new FSwarmDebugPresenter());
 	if (!SwarmDebugOverlay)
 	{
@@ -539,11 +609,13 @@ void AFlyingSwarmCombatSimPlayerController::UpdateSwarmDebug(UWorld* World, ELev
 	const IConsoleVariable* DepthMode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth"));
 	const UMaterial* BaseMaterial = Source ? Source->GetMaterial() : nullptr;
 	FString OutlineFailure;
-	if (!bSwarmAwareness) OutlineFailure = TEXT("Awareness view is disabled.");
+	if (!bSwarmCollision) OutlineFailure = TEXT("Collision outlines are disabled.");
 	else if (!SwarmDebug.bOutlines) OutlineFailure = TEXT("Outline rendering is disabled in debug settings.");
 	else if (!Camera) OutlineFailure = TEXT("The debug camera manager is unavailable.");
 	else if (!Source) OutlineFailure = TEXT("No outline post-process material is assigned.");
-	else if (!BaseMaterial || BaseMaterial->MaterialDomain != MD_PostProcess) OutlineFailure = TEXT("The assigned outline material must use the Post Process material domain.");
+	else if (!BaseMaterial || BaseMaterial->MaterialDomain != MD_PostProcess)
+		OutlineFailure = TEXT(
+			"The assigned outline material must use the Post Process material domain.");
 	else if (!DepthMode) OutlineFailure = TEXT("The r.CustomDepth setting is unavailable.");
 	else if (DepthMode->GetInt() != 3) OutlineFailure = TEXT("Set r.CustomDepth to 3 to enable stencil outlines.");
 	const bool bOutlineReady = OutlineFailure.IsEmpty();
@@ -569,5 +641,6 @@ void AFlyingSwarmCombatSimPlayerController::UpdateSwarmDebug(UWorld* World, ELev
 		DebugOutlineSource.Reset();
 	}
 	if (Camera) Camera->SetSwarmDebugBlendable(DebugOutlineMaterial);
-	SwarmDebugPresenter->Update(*this, *SwarmDebugOverlay, SwarmDebug, bSwarmAwareness, bSwarmSpatial, bOutlineReady && DebugOutlineMaterial != nullptr, OutlineFailure);
+	SwarmDebugPresenter->Update(*this, *SwarmDebugOverlay, SwarmDebug, bSwarmCollision, bSwarmState,
+	                            bSwarmSpatial, bOutlineReady && DebugOutlineMaterial != nullptr, OutlineFailure);
 }

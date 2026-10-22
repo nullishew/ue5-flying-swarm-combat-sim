@@ -13,8 +13,10 @@ struct FSwarmDebugSettings;
 class FSwarmDebugPresenter
 {
 public:
-	void Update(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FSwarmDebugSettings& Settings, bool bAwareness, bool bSpatial, bool bOutlineReady, const FString& OutlineFailure);
+	void Update(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FSwarmDebugSettings& Settings, bool bCollision, bool bAgentState, bool bSpatial, bool bOutlineReady, const FString& OutlineFailure);
 	void Shutdown();
+	/** Restore agent rendering without stopping the independent badge/spatial views. */
+	void DisableCollision();
 
 private:
 	struct FOriginalMeshState

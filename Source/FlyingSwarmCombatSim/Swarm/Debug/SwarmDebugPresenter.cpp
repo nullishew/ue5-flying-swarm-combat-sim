@@ -3,11 +3,14 @@
 #include "Swarm/Debug/SwarmDebugSettings.h"
 #include "Swarm/FlyingBoid.h"
 #include "Combat/BoidAttackComponent.h"
+#include "Combat/BoidAttackProjectile.h"
 #include "Player/FlyingCharacter.h"
 #include "UI/SwarmDebugOverlayWidget.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/MeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SphereComponent.h"
+#include "EngineUtils.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -62,6 +65,41 @@ namespace
 		}
 	}
 
+	void DrawProjectileRing(UWorld* World, const FVector& Center, double Radius, const FVector& AxisX, const FVector& AxisY, const FColor& Color, int32 Segments, float Thickness)
+	{
+		FVector Previous = Center + AxisX * Radius;
+		for (int32 Index = 1; Index <= Segments; ++Index)
+		{
+			const double Angle = 2.0 * UE_PI * Index / Segments;
+			const FVector Next = Center + (AxisX * FMath::Cos(Angle) + AxisY * FMath::Sin(Angle)) * Radius;
+			DrawDebugLine(World, Previous, Next, Color, false, 0.f, SDPG_Foreground, Thickness);
+			Previous = Next;
+		}
+	}
+
+	void DrawProjectileBoundary(UWorld* World, const USphereComponent* Sphere, const FVector& ViewLocation, const FVector& ViewUp, const FVector& ViewRight, const FColor& Color, int32 Segments, float Thickness)
+	{
+		if (!IsValid(Sphere) || !Sphere->IsRegistered() || Sphere->GetWorld() != World || Sphere->GetCollisionEnabled() == ECollisionEnabled::NoCollision) return;
+		const FVector Center = Sphere->GetComponentLocation();
+		const double Radius = Sphere->GetScaledSphereRadius();
+		if (Center.ContainsNaN() || ViewLocation.ContainsNaN() || !FMath::IsFinite(Radius) || Radius <= 0.0) return;
+		const FVector Offset = ViewLocation - Center;
+		const double DistanceSquared = Offset.SizeSquared();
+		if (!FMath::IsFinite(DistanceSquared) || DistanceSquared <= Radius * Radius) return;
+		const double Distance = FMath::Sqrt(DistanceSquared);
+		const FVector ToCamera = Offset / Distance;
+		FVector Right = FVector::CrossProduct(ViewUp, ToCamera).GetSafeNormal();
+		if (Right.IsNearlyZero()) Right = FVector::CrossProduct(ViewRight, ToCamera).GetSafeNormal();
+		const FVector Up = FVector::CrossProduct(ToCamera, Right).GetSafeNormal();
+		if (Right.IsNearlyZero() || Up.IsNearlyZero()) return;
+		// The visible sphere edge lies on a tangent circle, not a centre-plane billboard.
+		const FVector SilhouetteCenter = Center + ToCamera * (Radius * Radius / Distance);
+		const double SilhouetteRadius = Radius * FMath::Sqrt(FMath::Max(0.0, 1.0 - Radius * Radius / DistanceSquared));
+		DrawProjectileRing(World, SilhouetteCenter, SilhouetteRadius, Right, Up, Color, Segments, Thickness);
+		DrawProjectileRing(World, Center, Radius, ToCamera, Up, Color, Segments, Thickness);
+		DrawProjectileRing(World, Center, Radius, ToCamera, Right, Color, Segments, Thickness);
+	}
+
 	bool ProjectBadge(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FVector& Location, FVector2D& OutPosition)
 	{
 		FVector2D Screen;
@@ -88,6 +126,11 @@ void FSwarmDebugPresenter::RestoreOutlines()
 	OriginalMeshes.Reset();
 }
 
+void FSwarmDebugPresenter::DisableCollision()
+{
+	RestoreOutlines();
+}
+
 void FSwarmDebugPresenter::Shutdown()
 {
 	RestoreOutlines();
@@ -98,7 +141,7 @@ void FSwarmDebugPresenter::Shutdown()
 	RemainingRoute.Reset();
 }
 
-void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FSwarmDebugSettings& Settings, bool bAwareness, bool bSpatial, bool bOutlineReady, const FString& OutlineFailure)
+void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FSwarmDebugSettings& Settings, bool bCollision, bool bAgentState, bool bSpatial, bool bOutlineReady, const FString& OutlineFailure)
 {
 	UWorld* World = Controller.GetWorld();
 	USwarmSimulationSubsystem* Simulation = World ? World->GetSubsystem<USwarmSimulationSubsystem>() : nullptr;
@@ -108,19 +151,16 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 		SuppressedSimulation = Simulation;
 		if (Simulation) Simulation->AcquireDebugPresentation();
 	}
-	if (!Simulation)
-	{
-		Overlay.ClearFrame();
-		return;
-	}
-	Simulation->GetDebugAgents(Agents);
-	const bool bDrawOutlines = bAwareness && Settings.bOutlines && bOutlineReady;
+	const bool bDrawOutlines = bCollision && Settings.bOutlines && bOutlineReady;
+	const bool bDrawState = bAgentState && Settings.bBadges;
+	if (Simulation && (bDrawOutlines || bDrawState || bSpatial)) Simulation->GetDebugAgents(Agents);
+	else Agents.Reset();
 	if (!bDrawOutlines) RestoreOutlines();
 	TSet<TWeakObjectPtr<UMeshComponent>> CurrentMeshes;
 	FrameBadges.Reset();
 	TArray<FSwarmDebugBadge>& Badges = FrameBadges;
 	Badges.Reserve(Agents.Num());
-	const bool bCanSimulate = Simulation->IsDebugSimulationReady();
+	const bool bCanSimulate = Simulation && Simulation->IsDebugSimulationReady();
 	const float MarkerSize = FMath::IsFinite(Settings.MarkerSizeCm) ? FMath::Clamp(Settings.MarkerSizeCm, 1.f, 200.f) : 18.f;
 	const float ArrowSeconds = FMath::IsFinite(Settings.VelocitySeconds) ? FMath::Clamp(Settings.VelocitySeconds, .001f, 5.f) : .5f;
 	const float ArrowCap = FMath::IsFinite(Settings.MaxVelocityArrowCm) ? FMath::Clamp(Settings.MaxVelocityArrowCm, 1.f, 10000.f) : 500.f;
@@ -137,7 +177,7 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 	for (const FSwarmDebugAgent& Agent : Agents)
 	{
 		AFlyingBoid* Boid = Agent.Boid.Get();
-		if (!IsValid(Boid) || !Simulation->IsAgentRegistered(Boid)) continue;
+		if (!Simulation || !IsValid(Boid) || !Simulation->IsAgentRegistered(Boid)) continue;
 		const FVector Position = Boid->GetActorLocation();
 		if (Position.ContainsNaN()) continue;
 		const FBoidTargetFacts Target = Boid->GetTargetFacts();
@@ -145,8 +185,8 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 		const FBoidNavigationFacts Navigation = Boid->GetNavigationFacts();
 		const FBoidCombatMovementFacts& Movement = Boid->CombatMovementFacts;
 		FBoidNavigationGoal Goal;
-		Simulation->GetDebugMovementView(Boid, Goal, RemainingRoute);
-		const FBoidDebugAttackState Attack = bAwareness && IsValid(Boid->AttackComponent) ? Boid->AttackComponent->GetDebugAttackState() : FBoidDebugAttackState();
+		if (bSpatial || bDrawState) Simulation->GetDebugMovementView(Boid, Goal, RemainingRoute);
+		const FBoidDebugAttackState Attack = (bDrawState || bDrawOutlines) && IsValid(Boid->AttackComponent) ? Boid->AttackComponent->GetDebugAttackState() : FBoidDebugAttackState();
 		const AFlyingCharacter* PlayerTarget = Cast<AFlyingCharacter>(Target.TargetActor.Get());
 		const bool bLiveTarget = IsValid(PlayerTarget) && PlayerTarget->IsAlive();
 		const bool bPursuing = bLiveTarget && (Target.bDetected || (Intent.bIsTransit && Navigation.bHasTransitGoal));
@@ -167,7 +207,7 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 			}
 		}
 		const bool bInFront = FVector::DotProduct(Position - ViewLocation, ViewForward) > 0.f;
-		if (bAwareness && Settings.bBadges && bInFront)
+		if (bDrawState && bInFront)
 		{
 			FSwarmDebugBadge Badge;
 			FVector BoundsOrigin, BoundsExtent;
@@ -232,6 +272,24 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 		const FVector Velocity = Boid->GetFlightVelocity();
 		if (Settings.bVelocity && !Velocity.ContainsNaN() && !Velocity.IsNearlyZero()) DrawDebugDirectionalArrow(World, Position, Position + Velocity.GetClampedToMaxSize(ArrowCap / ArrowSeconds) * ArrowSeconds, MarkerSize, Settings.VelocityColor.ToFColor(true), false, 0.f, SDPG_Foreground, Thickness);
 	}
+	// Enemy shots remain observable without a ready simulation, living shooter or outline material.
+	if (bCollision && Settings.bProjectileShapes && World)
+	{
+		const int32 Segments = FMath::Clamp(Settings.ProjectileRingSegments, 8, 64);
+		const float RingThickness = FMath::IsFinite(Settings.ProjectileLineThickness) ? FMath::Clamp(Settings.ProjectileLineThickness, .5f, 4.f) : 1.5f;
+		const FColor RingColor = Settings.ProjectileColor.ToFColor(true);
+		const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+		const FVector ViewRight = ViewRotation.RotateVector(FVector::RightVector);
+		for (TActorIterator<AFlyingBoidAttackProjectile> It(World); It; ++It)
+		{
+			AFlyingBoidAttackProjectile* Projectile = *It;
+			if (IsValid(Projectile) && Projectile->HasActorBegunPlay() && Projectile->GetActorEnableCollision() && !Projectile->IsActorBeingDestroyed())
+			{
+				DrawProjectileBoundary(World, Projectile->CollisionComponent.Get(), ViewLocation, ViewUp, ViewRight, RingColor, Segments, RingThickness);
+			}
+		}
+	}
+
 	for (auto It = OriginalMeshes.CreateIterator(); It; ++It)
 	{
 		if (CurrentMeshes.Contains(It.Key())) continue;
@@ -243,10 +301,12 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 		}
 		It.RemoveCurrent();
 	}
-	FString Legend = FString::Printf(TEXT("Awareness [%s] | Spatial [%s]"), bAwareness ? TEXT("ON") : TEXT("OFF"), bSpatial ? TEXT("ON") : TEXT("OFF"));
-	if (bAwareness) Legend += TEXT("\nWhite unaware | Amber aware | Red attack conditions\nAttempt = next opportunity, not a guaranteed shot");
+	FString Legend = FString::Printf(TEXT("Collision [%s] | Agent State [%s] | Spatial [%s]"), bCollision ? TEXT("ON") : TEXT("OFF"), bAgentState ? TEXT("ON") : TEXT("OFF"), bSpatial ? TEXT("ON") : TEXT("OFF"));
+	if (bCollision && Settings.bOutlines) Legend += TEXT("\nAgent outlines: white unaware | Amber aware | Red attack conditions");
+	if (bCollision && Settings.bProjectileShapes) Legend += TEXT("\nMagenta rings: enemy projectile collider | X-ray, true radius");
+	if (bAgentState) Legend += TEXT("\nAttempt = next opportunity, not a guaranteed shot");
 	if (bSpatial) Legend += FString::Printf(TEXT("\nGold dashed goal | Cyan remaining route | Green velocity\nX-ray graphics | Velocity: %.2fs, capped %.0fcm"), ArrowSeconds, ArrowCap);
-	if (bAwareness && Settings.bOutlines && !bOutlineReady) Legend += TEXT("\nOutlines unavailable: ") + OutlineFailure;
+	if (bCollision && Settings.bOutlines && !bOutlineReady) Legend += TEXT("\nOutlines unavailable: ") + OutlineFailure;
 	Overlay.SetFrame(MoveTemp(Badges), Legend, Settings.FontSize, Settings.BadgeBackground);
 	// The widget swapped its previous allocation back; clear old values while reusing capacity.
 	FrameBadges.Reset();

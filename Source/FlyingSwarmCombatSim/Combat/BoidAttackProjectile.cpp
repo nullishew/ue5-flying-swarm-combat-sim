@@ -16,7 +16,7 @@ AFlyingBoidAttackProjectile::AFlyingBoidAttackProjectile()
 	PrimaryActorTick.bCanEverTick = false;
 
 	CollisionComponent = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionComponent"));
-	CollisionComponent->InitSphereRadius(ProjectileRadius);
+	CollisionComponent->InitSphereRadius(8.0f);
 	CollisionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	CollisionComponent->SetCollisionObjectType(ECC_GameTraceChannel1);
 	ConfigureCollisionResponses();
@@ -54,17 +54,17 @@ void AFlyingBoidAttackProjectile::EndPlay(const EEndPlayReason::Type EndPlayReas
 }
 
 bool AFlyingBoidAttackProjectile::InitializeLaunch(AFlyingBoid* InShooter, AFlyingCharacter* InIntendedTarget,
-	const FVector& InLaunchDirection, float InSpeed, float InRadius, float InDamage, float InLifespan)
+	const FVector& InLaunchDirection, float InSpeed, float InDamage, float InLifespan)
 {
 	if (bLaunchInitialized || !IsValid(InShooter) || !InShooter->IsAlive()
 		|| !IsValid(InIntendedTarget) || !InIntendedTarget->IsAlive()
 		|| !FMath::IsFinite(InLaunchDirection.X) || !FMath::IsFinite(InLaunchDirection.Y)
 		|| !FMath::IsFinite(InLaunchDirection.Z) || InLaunchDirection.IsNearlyZero()
 		|| !FMath::IsFinite(InSpeed) || InSpeed <= 0.0f
-		|| !FMath::IsFinite(InRadius) || InRadius <= 0.0f
 		|| !FMath::IsFinite(InDamage) || InDamage < 0.0f
 		|| !FMath::IsFinite(InLifespan) || InLifespan <= 0.0f
-		|| !CollisionComponent || !ProjectileMovement)
+		|| !IsValid(CollisionComponent) || GetRootComponent() != CollisionComponent || !ProjectileMovement
+		|| !FMath::IsFinite(CollisionComponent->GetScaledSphereRadius()) || CollisionComponent->GetScaledSphereRadius() <= 0.0f)
 	{
 		return false;
 	}
@@ -73,17 +73,13 @@ bool AFlyingBoidAttackProjectile::InitializeLaunch(AFlyingBoid* InShooter, AFlyi
 	Shooter = InShooter;
 	IntendedTarget = InIntendedTarget;
 	LaunchSpeed = InSpeed;
-	LaunchRadius = InRadius;
 	LaunchDamage = InDamage;
 	LaunchLifespan = InLifespan;
 	this->LaunchDirection = InLaunchDirection.GetSafeNormal();
-	LaunchOrigin = GetActorLocation();
-	SetActorScale3D(FVector::OneVector);
 	SetActorRotation(this->LaunchDirection.Rotation());
 	SetOwner(InShooter);
 	SetInstigator(InShooter->GetInstigator());
 
-	CollisionComponent->SetSphereRadius(LaunchRadius);
 	CollisionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	CollisionComponent->SetCollisionObjectType(ECC_GameTraceChannel1);
 	ConfigureCollisionResponses();
@@ -99,7 +95,7 @@ bool AFlyingBoidAttackProjectile::InitializeLaunch(AFlyingBoid* InShooter, AFlyi
 	ProjectileMovement->MaxSpeed = LaunchSpeed;
 	ProjectileMovement->Velocity = this->LaunchDirection * LaunchSpeed;
 	CollisionComponent->OnComponentHit.AddDynamic(this, &AFlyingBoidAttackProjectile::HandleBlockingHit);
-	// Deferred construction must finish before collision or movement is enabled.
+	// Launch presentation waits for BeginPlay when called by an external deferred-spawn path.
 	SendLaunchPresentationIfReady();
 	return true;
 }
@@ -110,13 +106,7 @@ void AFlyingBoidAttackProjectile::SendLaunchPresentationIfReady()
 	{
 		return;
 	}
-	// Blueprint construction/BeginPlay may change component defaults. Restore native
-	// geometry before publishing the authoritative launch to presentation.
-	SetRootComponent(CollisionComponent);
-	SetActorScale3D(FVector::OneVector);
-	SetActorLocation(LaunchOrigin, false, nullptr, ETeleportType::TeleportPhysics);
-	SetActorRotation(LaunchDirection.Rotation());
-	CollisionComponent->SetSphereRadius(LaunchRadius);
+	// Keep the authored sphere dimensions and scale; only launch state is applied here.
 	CollisionComponent->SetCollisionObjectType(ECC_GameTraceChannel1);
 	ConfigureCollisionResponses();
 	CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -127,15 +117,11 @@ void AFlyingBoidAttackProjectile::SendLaunchPresentationIfReady()
 	// Keep the Blueprint hook presentation-only even if a child implementation changes defaults.
 	if (!bResolved && IsValid(this) && CollisionComponent && ProjectileMovement)
 	{
-		CollisionComponent->SetSphereRadius(LaunchRadius);
 		CollisionComponent->SetCollisionObjectType(ECC_GameTraceChannel1);
 		ConfigureCollisionResponses();
 		CollisionComponent->IgnoreActorWhenMoving(Shooter.Get(), true);
 		if (USwarmSimulationSubsystem* Simulation = CollisionSimulation.Get()) Simulation->GetCollisionQueries().RegisterProjectile(CollisionComponent);
 		CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-		SetActorScale3D(FVector::OneVector);
-		SetActorLocation(LaunchOrigin, false, nullptr, ETeleportType::TeleportPhysics);
-		SetActorRotation(LaunchDirection.Rotation());
 		ProjectileMovement->ProjectileGravityScale = 0.0f;
 		ProjectileMovement->bShouldBounce = false;
 		ProjectileMovement->bIsHomingProjectile = false;

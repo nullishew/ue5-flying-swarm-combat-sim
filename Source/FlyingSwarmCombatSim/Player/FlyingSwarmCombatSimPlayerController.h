@@ -62,10 +62,13 @@ protected:
 	TObjectPtr<UInputMappingContext> DebugMappingContext;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
-	TObjectPtr<UInputAction> ToggleAwarenessAction;
+	TObjectPtr<UInputAction> ToggleSwarmCollisionDebugAction;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
-	TObjectPtr<UInputAction> ToggleSpatialAction;
+	TObjectPtr<UInputAction> ToggleSwarmStateDebugAction;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
+	TObjectPtr<UInputAction> ToggleSwarmSpatialDebugAction;
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -139,10 +142,12 @@ protected:
 	TObjectPtr<UInputMappingContext> SpectatorMappingContext;
 
 private:
-	void ToggleSwarmAwareness();
-	void ToggleSwarmSpatial();
+	void ToggleSwarmStateDebug();
+	void ToggleSwarmSpatialDebug();
+	void ToggleSwarmCollisionDebug();
 	void UpdateSwarmDebug(UWorld* World, ELevelTick TickType, float DeltaSeconds);
 	void StopSwarmDebug();
+	void DisableCollision();
 
 	UPROPERTY(Transient)
 	TObjectPtr<USwarmDebugOverlayWidget> SwarmDebugOverlay;
@@ -151,17 +156,17 @@ private:
 	TWeakObjectPtr<UMaterialInterface> DebugOutlineSource;
 	TWeakObjectPtr<AFlyingSwarmCombatSimCameraManager> DebugCameraManager;
 	TWeakObjectPtr<UInputComponent> DebugBoundInput;
-	bool bDebugAwarenessBindingReady = false;
-	bool bDebugSpatialBindingReady = false;
 	TUniquePtr<FSwarmDebugPresenter, FSwarmDebugPresenterDeleter> SwarmDebugPresenter;
 	FDelegateHandle SwarmDebugTickHandle;
-	bool bSwarmAwareness = false;
+	bool bSwarmCollision = false;
+	bool bSwarmState = false;
 	bool bSwarmSpatial = false;
 
 	AFlyingSwarmCombatSimGameMode* RunMode() const;
 	UGameplayHUDWidget* RunHUD() const;
 	UEnhancedInputLocalPlayerSubsystem* InputSubsystem() const;
 	void EnsureSpectatorInputDefaults();
+	void TryBindDebugInput();
 	void TryBindRunInput();
 	void TryStartRun();
 	bool TryInstallContexts(bool bSpectating);

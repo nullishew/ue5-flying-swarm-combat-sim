@@ -8,6 +8,7 @@
 
 class AFlyingBoidAttackProjectile;
 class USceneComponent;
+class USphereComponent;
 class USwarmSimulationSubsystem;
 struct FCollisionQueryParams;
 
@@ -84,7 +85,6 @@ private:
 	float SnapshottedApproachDistance = 2000.f;
 	float SnapshottedCloseDistance = 100.f;
 	float SnapshottedClearance = 30.f;
-	float SnapshottedProjectileRadius = 0.f;
 	float SnapshottedProjectileSpeed = 0.f;
 	float SnapshottedProjectileDamage = 0.f;
 	float SnapshottedProjectileLifespan = 0.f;
@@ -102,6 +102,6 @@ private:
 	void RefreshSimulationSubscription();
 	void OnSimulationFrame(float DeltaTime);
 	void DetachSimulation();
-	bool ValidateMuzzle(const FVector& MuzzleLocation, const FCollisionQueryParams& Params) const;
-	bool ValidateLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const;
+	bool ValidateMuzzle(const USphereComponent& ProjectileSphere, const FCollisionQueryParams& Params) const;
+	bool ValidateLaunch(const USphereComponent& ProjectileSphere, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const;
 };

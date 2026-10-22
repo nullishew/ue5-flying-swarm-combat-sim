@@ -8,7 +8,6 @@
 #include "Components/SphereComponent.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Engine/World.h"
-#include "Kismet/GameplayStatics.h"
 #include "GameFramework/Actor.h"
 #include "Player/FlyingCharacter.h"
 #include "Swarm/BoidIntentTypes.h"
@@ -130,12 +129,10 @@ void UBoidAttackComponent::BeginPlay()
 		const AFlyingBoidAttackProjectile* Defaults = SnapshottedProjectileClass->GetDefaultObject<AFlyingBoidAttackProjectile>();
 		const UProjectileMovementComponent* Movement = Defaults ? Defaults->FindComponentByClass<UProjectileMovementComponent>() : nullptr;
 		const float Speed = Defaults ? Defaults->ProjectileSpeed : 0.f;
-		SnapshottedProjectileRadius = Defaults ? Defaults->ProjectileRadius : 0.f;
 		SnapshottedProjectileSpeed = Speed;
 		SnapshottedProjectileDamage = Defaults ? Defaults->DamageAmount : 0.f;
 		SnapshottedProjectileLifespan = Defaults ? Defaults->ProjectileLifespan : 0.f;
 		bConfigurationValid = Defaults && Movement && FMath::IsFinite(Speed) && Speed > 0.f
-			&& FMath::IsFinite(SnapshottedProjectileRadius) && SnapshottedProjectileRadius > 0.f
 			&& FMath::IsFinite(SnapshottedProjectileDamage) && SnapshottedProjectileDamage >= 0.f
 			&& FMath::IsFinite(SnapshottedProjectileLifespan) && SnapshottedProjectileLifespan > 0.f;
 	}
@@ -185,26 +182,28 @@ void UBoidAttackComponent::ResetCadence(EBoidAttackRejection Reason)
 	AttackFacts.LastRejection = Reason;
 }
 
-bool UBoidAttackComponent::ValidateMuzzle(const FVector& MuzzleLocation, const FCollisionQueryParams& Params) const
+bool UBoidAttackComponent::ValidateMuzzle(const USphereComponent& ProjectileSphere, const FCollisionQueryParams& Params) const
 {
+	const FVector MuzzleLocation = ProjectileSphere.GetComponentLocation();
 	const AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
 	UWorld* World = GetWorld();
 	if (!Boid || !World || !Boid->CollisionSphere || MuzzleLocation.ContainsNaN()) return false;
 	const FVector Center = Boid->CollisionSphere->GetComponentLocation();
 	if (Center.ContainsNaN()) return false;
 	// Keep the target in the projectile-sized sweeps to reject a muzzle inside it.
-	const FCollisionShape Shape = FCollisionShape::MakeSphere(SnapshottedProjectileRadius);
+	const FCollisionShape Shape = ProjectileSphere.GetCollisionShape();
 	if (World->OverlapBlockingTestByChannel(MuzzleLocation, FQuat::Identity, ECC_GameTraceChannel1, Shape, Params)) return false;
 	FHitResult Hit;
 	if (World->SweepSingleByChannel(Hit, Center, MuzzleLocation, FQuat::Identity, ECC_GameTraceChannel1, Shape, Params) && Hit.bBlockingHit) return false;
 	return true;
 }
 
-bool UBoidAttackComponent::ValidateLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const
+bool UBoidAttackComponent::ValidateLaunch(const USphereComponent& ProjectileSphere, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const
 {
+	const FVector MuzzleLocation = ProjectileSphere.GetComponentLocation();
 	UWorld* World = GetWorld();
 	if (!World || Direction.ContainsNaN()) return false;
-	const FCollisionShape Shape = FCollisionShape::MakeSphere(SnapshottedProjectileRadius);
+	const FCollisionShape Shape = ProjectileSphere.GetCollisionShape();
 	FHitResult Hit;
 	const FVector LaunchEnd = MuzzleLocation + Direction * SnapshottedClearance;
 	if (LaunchEnd.ContainsNaN()) return false;
@@ -358,30 +357,50 @@ void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 	FCollisionQueryParams MuzzleParams(SCENE_QUERY_STAT(BoidProjectileMuzzle), false);
 	MuzzleParams.AddIgnoredActor(Boid);
 	Boid->GetSimulationSubsystem()->GetCollisionQueries().AddProjectileExceptions(MuzzleParams);
-	if (!ValidateMuzzle(MuzzleLocation, MuzzleParams)) return;
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = Boid;
+	SpawnParams.Instigator = Boid->GetInstigator();
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	for (const FVector& Direction : Directions)
 	{
 		if (!CanContinue()) return;
-		if (!ValidateLaunch(MuzzleLocation, Direction, Target, MuzzleParams)) continue;
-		AttackFacts.bCommonEligible = true;
 		const FTransform SpawnTransform(Direction.Rotation(), MuzzleLocation);
-		AFlyingBoidAttackProjectile* Projectile = World->SpawnActorDeferred<AFlyingBoidAttackProjectile>(
-			SnapshottedProjectileClass, SpawnTransform, Boid, Boid->GetInstigator(), ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-		// Spawn callbacks may have ended Combat before deferred initialization.
+		AFlyingBoidAttackProjectile* Projectile = World->SpawnActor<AFlyingBoidAttackProjectile>(SnapshottedProjectileClass, SpawnTransform, SpawnParams);
+		// Construction/BeginPlay must finish before reading the authored collision shape.
 		if (!CanContinue())
 		{
 			if (IsValid(Projectile)) Projectile->Destroy();
 			return;
 		}
-		if (!IsValid(Projectile) || !Projectile->InitializeLaunch(Boid, Target, Direction, SnapshottedProjectileSpeed,
-			SnapshottedProjectileRadius, Damage, SnapshottedProjectileLifespan))
+		if (!IsValid(Projectile))
+		{
+			AttackFacts.LastRejection = EBoidAttackRejection::SpawnFailed;
+			continue;
+		}
+		USphereComponent* Sphere = Projectile->CollisionComponent;
+		if (!IsValid(Sphere) || !Sphere->IsRegistered() || Projectile->GetRootComponent() != Sphere
+			|| !FMath::IsFinite(Sphere->GetScaledSphereRadius()) || Sphere->GetScaledSphereRadius() <= 0.f)
+		{
+			Projectile->Destroy();
+			AttackFacts.LastRejection = EBoidAttackRejection::InvalidConfiguration;
+			continue;
+		}
+		// Native projectiles remain inactive until InitializeLaunch; validate the final component geometry.
+		FCollisionQueryParams ProjectileParams = MuzzleParams;
+		ProjectileParams.AddIgnoredActor(Projectile);
+		if (!ValidateMuzzle(*Sphere, ProjectileParams) || !ValidateLaunch(*Sphere, Direction, Target, ProjectileParams))
+		{
+			Projectile->Destroy();
+			continue;
+		}
+		AttackFacts.bCommonEligible = true;
+		if (!Projectile->InitializeLaunch(Boid, Target, Direction, SnapshottedProjectileSpeed, Damage, SnapshottedProjectileLifespan))
 		{
 			if (IsValid(Projectile)) Projectile->Destroy();
 			AttackFacts.LastRejection = EBoidAttackRejection::SpawnFailed;
 			continue;
 		}
-		UGameplayStatics::FinishSpawningActor(Projectile, SpawnTransform);
-		// BeginPlay/presentation can kill the shooter or stop its StateTree.
+		// Launch presentation can kill the shooter or stop its StateTree.
 		if (!CanContinue()) return;
 		++AttackFacts.LaunchedProjectileCount;
 		AttackFacts.ShotCount = FMath::Min(AttackFacts.ShotCount, MAX_int32 - 1) + 1;

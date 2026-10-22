@@ -32,19 +32,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = "1.0", Units = "cm/s"))
 	float ProjectileSpeed = 1800.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = "0.1", Units = "cm"))
-	float ProjectileRadius = 8.0f;
-
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = "0.0"))
 	float DamageAmount = 10.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = "0.1", Units = "s"))
 	float ProjectileLifespan = 5.0f;
 
-	/** Configure and start after spawning at the validated muzzle transform. */
+	/** Start after construction and clearance validation. CollisionComponent owns the projectile dimensions. */
 	UFUNCTION(BlueprintCallable, Category = "Projectile")
 	bool InitializeLaunch(AFlyingBoid* Shooter, AFlyingCharacter* IntendedTarget, const FVector& LaunchDirection,
-		float InSpeed, float InRadius, float InDamage, float InLifespan);
+		float InSpeed, float InDamage, float InLifespan);
 
 protected:
 	virtual void BeginPlay() override;
@@ -70,11 +67,9 @@ private:
 	bool bHasBegunPlay = false;
 	bool bLaunchPresentationSent = false;
 	float LaunchSpeed = 0.0f;
-	float LaunchRadius = 0.0f;
 	float LaunchDamage = 0.0f;
 	float LaunchLifespan = 0.0f;
 	FVector LaunchDirection = FVector::ForwardVector;
-	FVector LaunchOrigin = FVector::ZeroVector;
 	TWeakObjectPtr<USwarmSimulationSubsystem> CollisionSimulation;
 
 	void SendLaunchPresentationIfReady();

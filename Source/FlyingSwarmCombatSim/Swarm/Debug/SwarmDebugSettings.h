@@ -20,6 +20,11 @@ struct FLYINGSWARMCOMBATSIM_API FSwarmDebugSettings
 	UPROPERTY(EditDefaultsOnly, Category = "Awareness") FLinearColor EngagingColor = FLinearColor(1.f, .08f, .04f);
 	UPROPERTY(EditDefaultsOnly, Category = "Badges", meta = (ClampMin = "8", ClampMax = "32")) int32 FontSize = 12;
 	UPROPERTY(EditDefaultsOnly, Category = "Badges") FLinearColor BadgeBackground = FLinearColor(.01f, .015f, .025f, .25f);
+	/** Current enemy projectile collision boundaries; no projectile meshes or stencil setup required. */
+	UPROPERTY(EditDefaultsOnly, Category = "Collision") bool bProjectileShapes = true;
+	UPROPERTY(EditDefaultsOnly, Category = "Collision") FLinearColor ProjectileColor = FLinearColor(1.f, .05f, .65f);
+	UPROPERTY(EditDefaultsOnly, Category = "Collision", meta = (ClampMin = "8", ClampMax = "64")) int32 ProjectileRingSegments = 32;
+	UPROPERTY(EditDefaultsOnly, Category = "Collision", meta = (ClampMin = "0.5", ClampMax = "4")) float ProjectileLineThickness = 1.5f;
 	/** Active movement-goal link, or a stationary marker while holding. */
 	UPROPERTY(EditDefaultsOnly, Category = "Spatial") bool bDestinations = true;
 	/** Continue the valid remaining route beyond the immediate goal. */
