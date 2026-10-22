@@ -21,6 +21,12 @@ class FBoidRangedPositionPlanner;
 class FBoidFlightRouteService;
 class FBoidCombatMovementCoordinator;
 
+struct FSwarmDebugAgent
+{
+	int32 Id = INDEX_NONE;
+	TWeakObjectPtr<AFlyingBoid> Boid;
+};
+
 struct FBoidCombatCoordinatorDeleter
 {
 	void operator()(FBoidCombatMovementCoordinator* Coordinator) const;
@@ -59,6 +65,7 @@ public:
 	bool IsAgentRegistered(const AFlyingBoid* Boid) const;
 	UFUNCTION(BlueprintPure, Category="Swarm")
 	bool CanSimulate() const;
+	bool IsDebugSimulationReady() const;
 	/** Spawn-time admission only; counts living enemies even outside population sensors or before registration. */
 	bool CanSpawnBoid() const;
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Swarm|Population")
@@ -110,6 +117,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Swarm")
 	int32 GetAgentId(const AFlyingBoid* Boid) const;
+	void GetDebugAgents(TArray<FSwarmDebugAgent>& OutAgents) const;
+	void AcquireDebugPresentation();
+	void ReleaseDebugPresentation();
 	UFUNCTION(BlueprintPure, Category = "Swarm")
 	bool IsInsideSafeBounds(const FVector& Position, float BoidRadius) const;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Navigation")
@@ -145,6 +155,7 @@ public:
 	int32 LastFrameCombatControlQueries = 0;
 	void AdoptNavigationRoute(int32 AgentId, const FVector& Goal, const FBoidFlightRouteResult& Route);
 	FBoidNavigationGoal GetNavigationGoal(AFlyingBoid* Boid) const;
+	bool GetDebugMovementView(const AFlyingBoid* Boid, FBoidNavigationGoal& OutGoal, TArray<FVector>& OutRemainingRoute) const;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Ranged")
 	FBoidRangedSettings RangedSettings;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm Debug")
@@ -168,7 +179,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm Debug")
 	bool bDrawSteering = false;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm Debug")
-	bool bDrawBounds = true;
+	bool bDrawBounds = false;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Tuning")
 	FSwarmTuningSettings Tuning;
 	/** Shared fallback for StateTree states that have not assigned a profile. */
@@ -274,6 +285,8 @@ private:
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingRemovals;
 	int32 NextAgentId = 1;
 	bool bEndingPlay = false;
+	int32 DebugPresentationUsers = 0;
+	bool IsDebugPresentationSuppressed() const { return DebugPresentationUsers > 0; }
 	UPROPERTY(Transient)
 	TObjectPtr<UBoidSteeringProfile> FallbackSteeringProfile;
 };

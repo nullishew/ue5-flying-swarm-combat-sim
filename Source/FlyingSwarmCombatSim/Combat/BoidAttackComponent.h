@@ -11,6 +11,13 @@ class USceneComponent;
 class USwarmSimulationSubsystem;
 struct FCollisionQueryParams;
 
+struct FBoidDebugAttackState
+{
+	bool bHasCadence = false;
+	bool bCanEngage = false;
+	float SecondsUntilAttempt = 0.f;
+};
+
 /** Fires while enabled by the Combat StateTree task and ranged movement is active; never moves the boid or completes a StateTree state. */
 UCLASS(ClassGroup=(Boid), meta=(BlueprintSpawnableComponent))
 class FLYINGSWARMCOMBATSIM_API UBoidAttackComponent : public UActorComponent
@@ -46,6 +53,7 @@ public:
 	uint64 GetCombatContextOwner() const { return ContextOwnerToken; }
 	void DeactivateCombatContext(uint64 OwnerToken);
 	const FBoidAttackFacts& GetAttackFacts() const { return AttackFacts; }
+	FBoidDebugAttackState GetDebugAttackState() const;
 	void SuspendSimulation();
 
 #if WITH_EDITOR

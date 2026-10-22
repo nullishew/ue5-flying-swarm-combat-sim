@@ -2,12 +2,18 @@
 
 
 #include "Player/FlyingSwarmCombatSimCameraManager.h"
+#include "Materials/MaterialInterface.h"
 
 AFlyingSwarmCombatSimCameraManager::AFlyingSwarmCombatSimCameraManager()
 {
 	// set the min/max pitch
 	ViewPitchMin = -70.0f;
 	ViewPitchMax = 80.0f;
+}
+
+void AFlyingSwarmCombatSimCameraManager::SetSwarmDebugBlendable(UMaterialInterface* Material)
+{
+	SwarmDebugBlendable = Material;
 }
 
 void AFlyingSwarmCombatSimCameraManager::PlayHitShake(float Degrees, float Duration)
@@ -22,6 +28,12 @@ void AFlyingSwarmCombatSimCameraManager::PlayHitShake(float Degrees, float Durat
 void AFlyingSwarmCombatSimCameraManager::ApplyCameraModifiers(float DeltaTime, FMinimalViewInfo& InOutPOV)
 {
 	Super::ApplyCameraModifiers(DeltaTime, InOutPOV);
+	if (SwarmDebugBlendable)
+	{
+		FPostProcessSettings DebugSettings;
+		DebugSettings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, SwarmDebugBlendable.Get()));
+		AddCachedPPBlend(DebugSettings, 1.f);
+	}
 	if (!bHitShakeActive) return;
 	HitShakeAge += FMath::Max(0.0f, DeltaTime);
 	const float Progress = FMath::Clamp(HitShakeAge / HitShakeDuration, 0.0f, 1.0f);

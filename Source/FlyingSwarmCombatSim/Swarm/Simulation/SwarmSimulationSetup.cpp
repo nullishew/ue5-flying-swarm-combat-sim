@@ -124,6 +124,13 @@ bool USwarmSimulationSubsystem::CanSimulate() const
 	return IsValid(Source) && Source->IsAvailableForSimulation() && IsValid(WanderBounds);
 }
 
+bool USwarmSimulationSubsystem::IsDebugSimulationReady() const
+{
+	if (bEndingPlay || !bWorldReady || !IsInitialized()) return false;
+	const ASwarmSimulationBounds* Source = BoundsSource.Get();
+	return IsValid(Source) && Source->IsAvailableForSimulation() && IsValid(WanderBounds);
+}
+
 bool USwarmSimulationSubsystem::IsAgentRegistered(const AFlyingBoid* Boid) const
 {
 	return !bEndingPlay && IsValid(Boid) && Boid->IsAlive() && Boid->GetWorld() == GetWorld()

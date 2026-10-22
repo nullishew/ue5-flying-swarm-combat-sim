@@ -6,6 +6,8 @@
 #include "Engine/EngineBaseTypes.h"
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
+#include "Swarm/Debug/SwarmDebugSettings.h"
+#include "Templates/UniquePtr.h"
 #include "FlyingSwarmCombatSimPlayerController.generated.h"
 
 class ACameraActor;
@@ -19,6 +21,15 @@ class UGameplayHUDWidget;
 class UHitFeedbackWidget;
 class UMaterialInterface;
 struct FInputActionValue;
+class FSwarmDebugPresenter;
+class USwarmDebugOverlayWidget;
+class UMaterialInstanceDynamic;
+class AFlyingSwarmCombatSimCameraManager;
+
+struct FSwarmDebugPresenterDeleter
+{
+	void operator()(FSwarmDebugPresenter* Presenter) const;
+};
 
 /** Owns local run UI and input across the player-to-spectator possession change. */
 UCLASS(abstract, Config = Game)
@@ -43,6 +54,19 @@ public:
 	void QueueSpectator();
 
 protected:
+	/** Optional Enhanced Input debug controls. The action assets should be configured to consume input. */
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug")
+	FSwarmDebugSettings SwarmDebug;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
+	TObjectPtr<UInputMappingContext> DebugMappingContext;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
+	TObjectPtr<UInputAction> ToggleAwarenessAction;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
+	TObjectPtr<UInputAction> ToggleSpatialAction;
+
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetupInputComponent() override;
@@ -115,6 +139,25 @@ protected:
 	TObjectPtr<UInputMappingContext> SpectatorMappingContext;
 
 private:
+	void ToggleSwarmAwareness();
+	void ToggleSwarmSpatial();
+	void UpdateSwarmDebug(UWorld* World, ELevelTick TickType, float DeltaSeconds);
+	void StopSwarmDebug();
+
+	UPROPERTY(Transient)
+	TObjectPtr<USwarmDebugOverlayWidget> SwarmDebugOverlay;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> DebugOutlineMaterial;
+	TWeakObjectPtr<UMaterialInterface> DebugOutlineSource;
+	TWeakObjectPtr<AFlyingSwarmCombatSimCameraManager> DebugCameraManager;
+	TWeakObjectPtr<UInputComponent> DebugBoundInput;
+	bool bDebugAwarenessBindingReady = false;
+	bool bDebugSpatialBindingReady = false;
+	TUniquePtr<FSwarmDebugPresenter, FSwarmDebugPresenterDeleter> SwarmDebugPresenter;
+	FDelegateHandle SwarmDebugTickHandle;
+	bool bSwarmAwareness = false;
+	bool bSwarmSpatial = false;
+
 	AFlyingSwarmCombatSimGameMode* RunMode() const;
 	UGameplayHUDWidget* RunHUD() const;
 	UEnhancedInputLocalPlayerSubsystem* InputSubsystem() const;

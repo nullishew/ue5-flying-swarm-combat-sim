@@ -321,6 +321,28 @@ int32 USwarmSimulationSubsystem::GetAgentId(const AFlyingBoid* Boid) const
 	return Id ? *Id : INDEX_NONE;
 }
 
+void USwarmSimulationSubsystem::GetDebugAgents(TArray<FSwarmDebugAgent>& OutAgents) const
+{
+	OutAgents.Reset(Agents.Num());
+	for (const FRegisteredAgent& Agent : Agents)
+	{
+		AFlyingBoid* Boid = Agent.Boid.Get();
+		if (!IsValid(Boid) || !Boid->IsAlive() || Boid->GetWorld() != GetWorld() || !IsAgentRegistered(Boid)) continue;
+		OutAgents.Add({Agent.Id, Agent.Boid});
+	}
+	OutAgents.Sort([](const FSwarmDebugAgent& A, const FSwarmDebugAgent& B) { return A.Id < B.Id; });
+}
+
+void USwarmSimulationSubsystem::AcquireDebugPresentation()
+{
+	if (DebugPresentationUsers < MAX_int32) ++DebugPresentationUsers;
+}
+
+void USwarmSimulationSubsystem::ReleaseDebugPresentation()
+{
+	DebugPresentationUsers = FMath::Max(0, DebugPresentationUsers - 1);
+}
+
 void USwarmSimulationSubsystem::RebuildAgentLookups()
 {
 	AgentIds.Reset();
@@ -526,7 +548,7 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 	CombatCoordinator->ValidateReadinessAfterMovement(*this, ReadinessAgents,
 	                                                  FMath::Min(DeltaTime, FMath::Max(.001f, Tuning.MaxFrameSeconds)));
 	AFlyingBoid* Selected = IsValid(DebugBoid) ? DebugBoid.Get() : TestBoid.Get();
-	if (bDrawPositioning && IsValid(Selected) && Selected->IsAlive())
+	if (bDrawPositioning && !IsDebugPresentationSuppressed() && IsValid(Selected) && Selected->IsAlive())
 	{
 		const FBoidCombatMovementFacts Facts = Selected->GetCombatMovementFacts();
 		const auto PhaseName = [](EBoidNavigationPhase Phase)
@@ -1177,7 +1199,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 				RecoveryCount = Current->RecoveryCount;
 			}
 		}
-		if (bDrawSteering && Boid == Selected)
+		if (bDrawSteering && !IsDebugPresentationSuppressed() && Boid == Selected)
 		{
 			const FVector Position = Snapshots[Index].Position;
 			DrawDirection(GetWorld(), Position, Outputs[Index].ProfileIntent, 180.0f, FColor::Blue);

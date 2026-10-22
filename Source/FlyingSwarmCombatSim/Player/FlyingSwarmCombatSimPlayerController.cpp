@@ -6,6 +6,11 @@
 #include "Player/SpectatorPlayer.h"
 #include "UI/GameplayHUDWidget.h"
 #include "UI/HitFeedbackWidget.h"
+#include "UI/SwarmDebugOverlayWidget.h"
+#include "Swarm/Debug/SwarmDebugPresenter.h"
+#include "HAL/IConsoleManager.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Game/FlyingSwarmCombatSimGameMode.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -24,6 +29,11 @@
 #include "FlyingSwarmCombatSim.h"
 #include "UnrealClient.h"
 #include "Widgets/Input/SVirtualJoystick.h"
+
+void FSwarmDebugPresenterDeleter::operator()(FSwarmDebugPresenter* Presenter) const
+{
+	delete Presenter;
+}
 
 AFlyingSwarmCombatSimPlayerController::AFlyingSwarmCombatSimPlayerController()
 {
@@ -86,6 +96,7 @@ void AFlyingSwarmCombatSimPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 	if (!IsLocalPlayerController()) return;
+	SwarmDebugTickHandle = FWorldDelegates::OnWorldTickEnd.AddUObject(this, &ThisClass::UpdateSwarmDebug);
 	RefreshCombatHUD();
 	SetInputMode(FInputModeGameOnly());
 	bShowMouseCursor = false;
@@ -103,6 +114,29 @@ void AFlyingSwarmCombatSimPlayerController::BeginPlay()
 void AFlyingSwarmCombatSimPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
+	if (IsLocalPlayerController() && InputComponent && DebugBoundInput.Get() != InputComponent)
+	{
+		DebugBoundInput = InputComponent;
+		bDebugAwarenessBindingReady = false;
+		bDebugSpatialBindingReady = false;
+	}
+	if (IsLocalPlayerController())
+	{
+		if (auto* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent))
+		{
+			// The owning action asset must enable Consume Input; shared assets are never mutated here.
+			if (!bDebugAwarenessBindingReady && ToggleAwarenessAction && ToggleAwarenessAction->ValueType == EInputActionValueType::Boolean)
+			{
+				EnhancedInput->BindAction(ToggleAwarenessAction, ETriggerEvent::Started, this, &ThisClass::ToggleSwarmAwareness);
+				bDebugAwarenessBindingReady = true;
+			}
+			if (!bDebugSpatialBindingReady && ToggleSpatialAction && ToggleSpatialAction->ValueType == EInputActionValueType::Boolean)
+			{
+				EnhancedInput->BindAction(ToggleSpatialAction, ETriggerEvent::Started, this, &ThisClass::ToggleSwarmSpatial);
+				bDebugSpatialBindingReady = true;
+			}
+		}
+	}
 	TryBindRunInput();
 	TryInstallContexts(false);
 }
@@ -209,6 +243,7 @@ bool AFlyingSwarmCombatSimPlayerController::TryInstallContexts(bool bSpectating)
 			for (UInputMappingContext* Context : MobileExcludedMappingContexts) if (IsValid(Context)) Contexts.AddUnique(Context);
 		}
 	}
+	if (IsValid(DebugMappingContext)) Contexts.AddUnique(DebugMappingContext);
 	if (Contexts.IsEmpty()) return false;
 	if (!bSpectating && !Contexts.ContainsByPredicate([this](const UInputMappingContext* Context) { return Context != SessionMappingContext; })) return false;
 	RemoveOwnedContexts();
@@ -219,7 +254,7 @@ bool AFlyingSwarmCombatSimPlayerController::TryInstallContexts(bool bSpectating)
 	Options.bIgnoreAllPressedKeysUntilRelease = true;
 	for (UInputMappingContext* Context : Contexts)
 	{
-		Input->AddMappingContext(Context, Context == SessionMappingContext ? 10 : 0, Options);
+		Input->AddMappingContext(Context, Context == DebugMappingContext ? 20 : Context == SessionMappingContext ? 10 : 0, Options);
 		OwnedContexts.Add(Context);
 		for (const FEnhancedActionKeyMapping& Mapping : Context->GetMappings())
 		{
@@ -431,6 +466,12 @@ bool AFlyingSwarmCombatSimPlayerController::ShouldUseTouchControls() const
 
 void AFlyingSwarmCombatSimPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	FWorldDelegates::OnWorldTickEnd.Remove(SwarmDebugTickHandle);
+	StopSwarmDebug();
+	SwarmDebugPresenter.Reset();
+	if (SwarmDebugOverlay) SwarmDebugOverlay->RemoveFromParent();
+	SwarmDebugOverlay = nullptr;
+	DebugBoundInput.Reset();
 	bControlsArmed = false;
 	bPendingSpectator = false;
 	if (GEngine) GEngine->OnTravelFailure().Remove(TravelFailureHandle);
@@ -446,4 +487,87 @@ void AFlyingSwarmCombatSimPlayerController::EndPlay(const EEndPlayReason::Type E
 	MobileControlsWidget = nullptr;
 	FallbackCamera = nullptr;
 	Super::EndPlay(EndPlayReason);
+}
+
+void AFlyingSwarmCombatSimPlayerController::ToggleSwarmAwareness()
+{
+	if (!IsLocalPlayerController() || !HasGameFocus()) return;
+	bSwarmAwareness = !bSwarmAwareness;
+	if (!bSwarmAwareness && !bSwarmSpatial) StopSwarmDebug();
+}
+
+void AFlyingSwarmCombatSimPlayerController::ToggleSwarmSpatial()
+{
+	if (!IsLocalPlayerController() || !HasGameFocus()) return;
+	bSwarmSpatial = !bSwarmSpatial;
+	if (!bSwarmAwareness && !bSwarmSpatial) StopSwarmDebug();
+}
+
+void AFlyingSwarmCombatSimPlayerController::StopSwarmDebug()
+{
+	if (SwarmDebugPresenter) SwarmDebugPresenter->Shutdown();
+	if (SwarmDebugOverlay)
+	{
+		SwarmDebugOverlay->ClearFrame();
+		SwarmDebugOverlay->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	if (auto* Camera = DebugCameraManager.Get()) Camera->SetSwarmDebugBlendable(nullptr);
+	DebugCameraManager.Reset();
+	DebugOutlineMaterial = nullptr;
+	DebugOutlineSource.Reset();
+}
+
+void AFlyingSwarmCombatSimPlayerController::UpdateSwarmDebug(UWorld* World, ELevelTick TickType, float DeltaSeconds)
+{
+	if (World != GetWorld() || !IsLocalPlayerController() || IsActorBeingDestroyed()) return;
+	if (!bSwarmAwareness && !bSwarmSpatial) return;
+	if (!SwarmDebugPresenter) SwarmDebugPresenter.Reset(new FSwarmDebugPresenter());
+	if (!SwarmDebugOverlay)
+	{
+		SwarmDebugOverlay = CreateWidget<USwarmDebugOverlayWidget>(this);
+		if (SwarmDebugOverlay) SwarmDebugOverlay->AddToPlayerScreen(20);
+	}
+	if (!SwarmDebugOverlay) return;
+	SwarmDebugOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+	auto* Camera = Cast<AFlyingSwarmCombatSimCameraManager>(PlayerCameraManager);
+	if (DebugCameraManager.Get() != Camera)
+	{
+		if (auto* Previous = DebugCameraManager.Get()) Previous->SetSwarmDebugBlendable(nullptr);
+		DebugCameraManager = Camera;
+	}
+	UMaterialInterface* Source = SwarmDebug.OutlineMaterial.Get();
+	const IConsoleVariable* DepthMode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth"));
+	const UMaterial* BaseMaterial = Source ? Source->GetMaterial() : nullptr;
+	FString OutlineFailure;
+	if (!bSwarmAwareness) OutlineFailure = TEXT("Awareness view is disabled.");
+	else if (!SwarmDebug.bOutlines) OutlineFailure = TEXT("Outline rendering is disabled in debug settings.");
+	else if (!Camera) OutlineFailure = TEXT("The debug camera manager is unavailable.");
+	else if (!Source) OutlineFailure = TEXT("No outline post-process material is assigned.");
+	else if (!BaseMaterial || BaseMaterial->MaterialDomain != MD_PostProcess) OutlineFailure = TEXT("The assigned outline material must use the Post Process material domain.");
+	else if (!DepthMode) OutlineFailure = TEXT("The r.CustomDepth setting is unavailable.");
+	else if (DepthMode->GetInt() != 3) OutlineFailure = TEXT("Set r.CustomDepth to 3 to enable stencil outlines.");
+	const bool bOutlineReady = OutlineFailure.IsEmpty();
+	if (bOutlineReady)
+	{
+		if (!DebugOutlineMaterial || DebugOutlineSource.Get() != Source)
+		{
+			DebugOutlineMaterial = UMaterialInstanceDynamic::Create(Source, this);
+			DebugOutlineSource = Source;
+		}
+		if (DebugOutlineMaterial)
+		{
+			DebugOutlineMaterial->SetVectorParameterValue(TEXT("UnawareColor"), SwarmDebug.UnawareColor);
+			DebugOutlineMaterial->SetVectorParameterValue(TEXT("AwareColor"), SwarmDebug.AwareColor);
+			DebugOutlineMaterial->SetVectorParameterValue(TEXT("EngagingColor"), SwarmDebug.EngagingColor);
+			DebugOutlineMaterial->SetScalarParameterValue(TEXT("OutlinePixels"), 2.0f);
+		}
+		else OutlineFailure = TEXT("The outline material instance could not be created.");
+	}
+	else
+	{
+		DebugOutlineMaterial = nullptr;
+		DebugOutlineSource.Reset();
+	}
+	if (Camera) Camera->SetSwarmDebugBlendable(DebugOutlineMaterial);
+	SwarmDebugPresenter->Update(*this, *SwarmDebugOverlay, SwarmDebug, bSwarmAwareness, bSwarmSpatial, bOutlineReady && DebugOutlineMaterial != nullptr, OutlineFailure);
 }

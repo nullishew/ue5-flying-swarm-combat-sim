@@ -22,6 +22,44 @@ UBoidAttackComponent::UBoidAttackComponent()
 	PrimaryComponentTick.TickGroup = TG_PostPhysics;
 }
 
+FBoidDebugAttackState UBoidAttackComponent::GetDebugAttackState() const
+{
+	FBoidDebugAttackState State;
+	const AFlyingBoid* Boid = Cast<AFlyingBoid>(GetOwner());
+	const USwarmSimulationSubsystem* Simulation = IsValid(Boid) ? Boid->GetSimulationSubsystem() : nullptr;
+	if (!IsValid(Boid) || !Boid->IsAlive() || !ContextOwnerToken || !IsValid(Simulation)
+		|| !Simulation->IsAgentRegistered(Boid) || !Simulation->IsDebugSimulationReady() || !Boid->IsSteeringActive()) return State;
+	const FBoidMovementIntent Intent = Boid->GetMovementIntent();
+	if (Intent.Policy != EBoidMovementPolicy::RangedOrbit || Intent.bIsTransit) return State;
+	const FBoidTargetFacts TargetFacts = Boid->GetTargetFacts();
+	AFlyingCharacter* Target = Cast<AFlyingCharacter>(TargetFacts.TargetActor.Get());
+	if (!TargetFacts.bDetected || !IsValid(Target) || !Target->IsAlive() || Boid->MovementTarget != Target) return State;
+	const bool bCadenceValid = CadenceTarget.Get() == Target && FMath::IsFinite(NextAttemptTime) && NextAttemptTime > 0.0;
+	State.bHasCadence = bCadenceValid;
+	if (bCadenceValid)
+	{
+		const UWorld* World = GetWorld();
+		if (World)
+		{
+			const double SecondsUntilAttempt = NextAttemptTime - World->GetTimeSeconds();
+			if (FMath::IsFinite(SecondsUntilAttempt)) State.SecondsUntilAttempt = static_cast<float>(FMath::Clamp(SecondsUntilAttempt, 0.0, static_cast<double>(MAX_flt)));
+		}
+	}
+	if (!bConfigurationValid || !SnapshottedProjectileClass || !TargetFacts.bHasSight) return State;
+	const FVector BoidCenter = Boid->GetActorLocation();
+	const FVector TargetCenter = Target->GetActorLocation();
+	if (BoidCenter.ContainsNaN() || TargetCenter.ContainsNaN()) return State;
+	const float CenterDistance = FVector::Distance(BoidCenter, TargetCenter);
+	const FBoidPositioningFacts Positioning = Boid->GetPositioningFacts();
+	const bool bNormalEligible = TargetFacts.bAttackReady && Positioning.bHasPosition
+		&& CenterDistance >= Positioning.EffectiveMinimumRangeCm && CenterDistance <= Positioning.EffectiveMaximumRangeCm;
+	const bool bApproachEligible = !Positioning.bOrbiting && SnapshottedApproachDistance > 0.f
+		&& CenterDistance <= SnapshottedApproachDistance;
+	const bool bCloseEligible = SnapshottedCloseDistance > 0.f && CenterDistance <= SnapshottedCloseDistance;
+	State.bCanEngage = bNormalEligible || bApproachEligible || bCloseEligible;
+	return State;
+}
+
 #if WITH_EDITOR
 void UBoidAttackComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
