@@ -2,9 +2,7 @@
 
 A flying swarm combat simulation set inside a cave, built in Unreal Engine 5.8. Pilot a flying ship through enclosed rock formations while fighting agents that flock, pursue, spread around you and fire from moving positions. The project combines a playable combat loop with configurable AI behavior and live visual tools for understanding and tuning the swarm.
 
-> **Gameplay footage - capture pending:** flight through the environment, swarm acquisition, ranged combat, and death/spectate/retry.
->
-> **Debug capture - capture pending:** independent State, Spatial and Collision views, followed by focused-agent inspection during a behavior transition.
+[![Watch the FlyingSwarmCombatSim video](https://img.youtube.com/vi/_Rsy-vUl4G0/hqdefault.jpg)](https://youtu.be/_Rsy-vUl4G0)
 
 ## Gameplay features
 
