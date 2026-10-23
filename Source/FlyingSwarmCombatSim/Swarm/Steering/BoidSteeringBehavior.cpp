@@ -1,5 +1,12 @@
 #include "Swarm/Steering/BoidSteeringBehavior.h"
 
+bool UBoidSteeringBehavior::ValidateSettings(FString& OutReason) const
+{
+	if (FMath::IsFinite(Weight) && Weight >= 0.f && FMath::IsFinite(SeededWeightVariation) && SeededWeightVariation >= 0.f && SeededWeightVariation <= 1.f) return true;
+	OutReason = TEXT("Behavior weight must be finite and nonnegative; seeded weight variation must be between zero and one.");
+	return false;
+}
+
 void UBoidSteeringBehavior::InitializeRuntime(FBoidSteeringRuntimeState& Runtime, int32 Seed) const
 {
 	Runtime = FBoidSteeringRuntimeState();

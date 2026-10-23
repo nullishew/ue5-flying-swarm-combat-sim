@@ -3,9 +3,8 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Swarm/Simulation/SwarmSimulationSettings.h"
-#include "Swarm/Simulation/SwarmSpatialIndex.h"
 #include "Swarm/Simulation/SwarmCollisionQueries.h"
-#include "Swarm/Flight/SwarmAvoidanceCandidates.h"
+#include "Swarm/Steering/BoidSteeringService.h"
 #include "Swarm/Debug/SwarmMovementDebug.h"
 #include "Engine/HitResult.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
@@ -189,13 +188,14 @@ public:
 	bool bDrawBounds = false;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Tuning")
 	FSwarmTuningSettings Tuning;
-	/** Shared fallback for StateTree states that have not assigned a profile. */
+	// Optional authored default for StateTree states that have not assigned a profile.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Steering")
 	TObjectPtr<UBoidSteeringProfile> DefaultSteeringProfile;
 
 private:
 	friend class FSwarmMembershipIndexTest;
 	friend class FSwarmTransitCompletionTest;
+	friend class FBoidSteeringSafetyAndSwitchTest;
 	friend class AFlyingBoid;
 	// Membership requests are exclusively issued by the agent lifecycle.
 	void RegisterBoid(AFlyingBoid* Boid);
@@ -205,7 +205,6 @@ private:
 	void Shutdown();
 	void FinishShutdown();
 	void InitializePendingLogic();
-	void CreateFallbackProfile();
 	TWeakObjectPtr<ASwarmSimulationBounds> BoundsSource;
 	uint64 SetupRefreshFrame = MAX_uint64;
 	FString LastSetupProblem;
@@ -290,11 +289,8 @@ private:
 	void RebuildAgentLookups();
 	FRegisteredAgent* FindAgentRecord(int32 AgentId);
 	FSwarmCollisionQueries CollisionQueries;
-	FSwarmSpatialIndex NeighborIndex;
-	TArray<FSwarmSpatialSample> NeighborSamples;
-	TArray<int32> NeighborCandidates;
-	TArray<FSwarmAvoidanceCandidate> AvoidanceCandidates;
-	TArray<int32> AvoidanceOrder;
+	TUniquePtr<FBoidSteeringService> SteeringService;
+	TSet<FString> ReportedSteeringProblems;
 	TArray<FHitResult> ClearanceHits;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingAdditions;
 	TArray<TWeakObjectPtr<AFlyingBoid>> PendingRemovals;
@@ -308,6 +304,4 @@ private:
 	void BeginDebugMovementStep(float StepTime);
 	void FinishDebugMovementStep();
 	bool IsDebugPresentationSuppressed() const { return DebugPresentationUsers > 0; }
-	UPROPERTY(Transient)
-	TObjectPtr<UBoidSteeringProfile> FallbackSteeringProfile;
 };

@@ -25,41 +25,18 @@ struct FLYINGSWARMCOMBATSIM_API FSwarmTuningSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flight", meta = (ClampMin = "0.0"))
 	float VisualTurnSpeed = 8.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wander", meta = (ClampMin = "0.01"))
-	float DriftChangeSeconds = 0.75f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wander", meta = (ClampMin = "0.0"))
-	float MaxDriftYawRateDeg = 20.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wander", meta = (ClampMin = "0.0"))
-	float MaxDriftPitchRateDeg = 12.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float NeighborRadiusCm = 450.0f;
 	/** Spatial-query cell width, not a limit on neighbor awareness or prediction distance. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Neighbor Queries", meta = (ClampMin = "1"))
 	float NeighborCellSizeCm = 900.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float SeparationDistanceCm = 180.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float PredictedSeparationSeconds = 0.5f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float PredictedSeparationClearanceCm = 90.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float SeparationWeight = 1.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float AlignmentWeight = 0.25f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flocking", meta = (ClampMin = "0.0"))
-	float CohesionWeight = 0.10f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "0.0"))
 	float ObstacleMarginCm = 20.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "0.0"))
 	float BoundsMarginCm = 20.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Safety Probes", meta = (ClampMin = "1.0"))
 	float MinLookaheadCm = 200.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Safety Probes", meta = (ClampMin = "1.0"))
 	float MaxLookaheadCm = 700.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "0.0"))
-	float AvoidanceHoldSeconds = 0.5f;
 	/** Optional escape directions tested per steering decision; mandatory safety probes are separate. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (ClampMin = "1"))
 	int32 MaxAvoidanceCandidates = 8;

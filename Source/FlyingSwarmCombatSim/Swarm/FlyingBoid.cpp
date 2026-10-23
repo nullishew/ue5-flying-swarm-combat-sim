@@ -418,7 +418,6 @@ FVector AFlyingBoid::CalculateArrivalAcceleration(const FVector& SnapshotPositio
 	return (DesiredVelocity - SnapshotVelocity).GetClampedToMaxSize(AccelerationLimit * DeltaTime) / DeltaTime;
 }
 
-
 void AFlyingBoid::ApplyAcceleration(const FVector& DesiredAcceleration, float DeltaTime, float SpeedScale)
 {
 	if (bDead || DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
@@ -478,8 +477,6 @@ void AFlyingBoid::InitializeWander(int32 InAgentId, int32 InitialSeed)
 		FlightHeading = FVector::ForwardVector;
 	}
 	Velocity = FVector::ZeroVector;
-	AvoidanceHoldSeconds = 0.0f;
-	HeldAvoidanceDirection = FVector::ZeroVector;
 	bSteeringActive = false;
 	ActiveSteeringProfile = nullptr;
 	RuntimeProfile = nullptr;
@@ -511,6 +508,7 @@ void AFlyingBoid::SetWanderActive(bool bActive)
 	bSteeringActive = bActive;
 	if (!bActive)
 	{
+		ResetSteeringAvoidanceRuntime();
 		ActiveSteeringProfile = nullptr;
 		PositioningFacts = FBoidPositioningFacts();
 		TargetFacts.bAttackReady = false;
@@ -519,14 +517,26 @@ void AFlyingBoid::SetWanderActive(bool bActive)
 
 void AFlyingBoid::PrepareSteeringRuntime(UBoidSteeringProfile* Profile)
 {
-	if (bDead || !Profile || RuntimeProfile == Profile)
+	if (bDead) return;
+	if (!Profile)
+	{
+		RuntimeProfile = nullptr;
+		RuntimeProfileSignature = 0;
+		SteeringRuntimeStates.Reset();
+		return;
+	}
+	uint32 Signature = 0;
+	for (const FBoidSteeringBehaviorEntry& Entry : Profile->Behaviors) Signature = HashCombine(Signature, HashCombine(GetTypeHash(Entry.EntryId), GetTypeHash(Entry.Behavior.Get())));
+	if (RuntimeProfile == Profile && RuntimeProfileSignature == Signature && SteeringRuntimeStates.Num() == Profile->Behaviors.Num())
 	{
 		return;
 	}
 	RuntimeProfile = Profile;
+	RuntimeProfileSignature = Signature;
 	SteeringRuntimeStates.SetNum(Profile->Behaviors.Num());
 	for (int32 Index = 0; Index < Profile->Behaviors.Num(); ++Index)
 	{
+		SteeringRuntimeStates[Index] = FBoidSteeringRuntimeState();
 		const FBoidSteeringBehaviorEntry& Entry = Profile->Behaviors[Index];
 		if (!Entry.Behavior)
 		{
@@ -546,6 +556,15 @@ FBoidSteeringRuntimeState& AFlyingBoid::GetSteeringRuntimeState(int32 BehaviorIn
 	return SteeringRuntimeStates[BehaviorIndex];
 }
 
+void AFlyingBoid::ResetSteeringAvoidanceRuntime()
+{
+	for (FBoidSteeringRuntimeState& State : SteeringRuntimeStates)
+	{
+		State.HeldAvoidanceDirection = FVector::ZeroVector;
+		State.AvoidanceHoldSeconds = 0.f;
+	}
+}
+
 FVector AFlyingBoid::TurnFlightHeading(const FVector& DesiredDirection, float MaxTurnRateDeg,
 	float DeltaTime)
 {
@@ -556,12 +575,6 @@ FVector AFlyingBoid::TurnFlightHeading(const FVector& DesiredDirection, float Ma
 			FMath::Max(0.0f, MaxTurnRateDeg));
 	}
 	return FlightHeading;
-}
-
-void AFlyingBoid::HoldAvoidanceDirection(const FVector& Direction, float Seconds)
-{
-	HeldAvoidanceDirection = Direction.GetSafeNormal();
-	AvoidanceHoldSeconds = FMath::Max(0.0f, Seconds);
 }
 
 namespace
@@ -755,7 +768,6 @@ bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float Boun
 	auto Restart = [&](const FVector& Direction)
 	{
 		FlightHeading = Direction;
-		HoldAvoidanceDirection(Direction, 0.5f);
 		Velocity = Direction * FMath::Min(100.0f, FMath::Min(FMath::Max(0.0f, CruiseSpeed),
 			FMath::Max(0.0f, MaxSpeedCmPerSec)));
 	};
@@ -809,7 +821,6 @@ bool AFlyingBoid::RecoverWanderFromStall(const UBoxComponent* Bounds, float Boun
 	}
 	return bHasLastValidWanderPosition && TryRelocate(LastValidWanderPosition);
 }
-
 
 bool AFlyingBoid::RequestRangedPhase(EBoidRangedPhaseRequest Phase, uint64 OwnerToken, uint64 CombatToken)
 {

@@ -85,17 +85,6 @@ namespace
 		return Params;
 	}
 
-	FVector OverlapSeparationDirection(int32 SelfId, int32 NeighborId)
-	{
-		const uint32 LowId = static_cast<uint32>(FMath::Min(SelfId, NeighborId));
-		const uint32 HighId = static_cast<uint32>(FMath::Max(SelfId, NeighborId));
-		const uint32 Hash = LowId * 73856093u ^ HighId * 19349663u;
-		const float Angle = 2.0f * PI * static_cast<float>(Hash % 1024u) / 1024.0f;
-		const float Height = static_cast<float>((Hash >> 10) % 1024u) / 512.0f - 1.0f;
-		const FVector Direction(FMath::Cos(Angle), FMath::Sin(Angle), Height);
-		return (SelfId < NeighborId ? Direction : -Direction).GetSafeNormal();
-	}
-
 	bool HasWallBetween(UWorld* World, const FBoidSnapshot& Self, const FBoidSnapshot& Other)
 	{
 		FCollisionQueryParams Params = ObstacleQuery(Self);
@@ -126,8 +115,8 @@ void USwarmSimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RangedPositionPlanner.Reset(new FBoidRangedPositionPlanner());
 	CombatCoordinator.Reset(new FBoidCombatMovementCoordinator());
 	RouteService.Reset(new FBoidFlightRouteService());
+	SteeringService = MakeUnique<FBoidSteeringService>();
 	CopyProjectSettings();
-	CreateFallbackProfile();
 }
 
 bool USwarmSimulationSubsystem::DoesSupportWorldType(EWorldType::Type WorldType) const
@@ -169,6 +158,7 @@ void USwarmSimulationSubsystem::Deinitialize()
 		RouteService.Reset();
 		RangedPositionPlanner.Reset();
 		CombatCoordinator.Reset();
+		SteeringService.Reset();
 	}
 	Super::Deinitialize();
 }
@@ -189,7 +179,7 @@ UBoidSteeringProfile* USwarmSimulationSubsystem::ResolveSteeringProfile(
 	if (IsValid(Preferred)) return Preferred;
 	if (IsValid(Boid) && IsValid(Boid->GetSteeringProfile())) return Boid->GetSteeringProfile();
 	if (IsValid(DefaultSteeringProfile)) return DefaultSteeringProfile.Get();
-	return FallbackSteeringProfile.Get();
+	return nullptr;
 }
 
 USwarmSimulationSubsystem::~USwarmSimulationSubsystem() = default;
@@ -205,27 +195,6 @@ void USwarmSimulationSubsystem::UpdateRangedPositions(float DeltaTime)
 	CombatCoordinator->Update(*this, PlannerAgents, *RangedPositionPlanner, DeltaTime);
 	UpdateNavigationGoals(DeltaTime);
 	CombatCoordinator->FinalizeNavigation(*this, PlannerAgents, DeltaTime);
-}
-
-void USwarmSimulationSubsystem::CreateFallbackProfile()
-{
-	FallbackSteeringProfile = nullptr;
-	if (!DefaultSteeringProfile)
-	{
-		// Keeps older StateTree assets functional until a designer assigns a
-		// reusable profile. This transient profile is never shared between agents
-		// for mutable state; each boid owns its runtime state array.
-		FallbackSteeringProfile = NewObject<UBoidSteeringProfile>(
-			this, MakeUniqueObjectName(this, UBoidSteeringProfile::StaticClass(),
-			                           TEXT("RuntimeFallbackWanderProfile")));
-		FBoidSteeringBehaviorEntry& Entry = FallbackSteeringProfile->Behaviors.AddDefaulted_GetRef();
-		Entry.EntryId = TEXT("FallbackWander");
-		UBoidWanderSteeringBehavior* Wander = NewObject<UBoidWanderSteeringBehavior>(FallbackSteeringProfile);
-		Wander->DriftChangeSeconds = Tuning.DriftChangeSeconds;
-		Wander->MaxDriftYawRateDeg = Tuning.MaxDriftYawRateDeg;
-		Wander->MaxDriftPitchRateDeg = Tuning.MaxDriftPitchRateDeg;
-		Entry.Behavior = Wander;
-	}
 }
 
 void USwarmSimulationSubsystem::Shutdown()
@@ -280,6 +249,8 @@ void USwarmSimulationSubsystem::FinishShutdown()
 	NavigationAgents.Reset();
 	PlannerAgents.Reset();
 	NavigationTime = 0.;
+	if (SteeringService) SteeringService->Reset();
+	ReportedSteeringProblems.Reset();
 }
 
 void USwarmSimulationSubsystem::RegisterBoid(AFlyingBoid* Boid)
@@ -506,6 +477,7 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 			RouteService.Reset();
 			RangedPositionPlanner.Reset();
 			CombatCoordinator.Reset();
+			SteeringService.Reset();
 		}
 	};
 	RefreshSetup();
@@ -744,214 +716,73 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 
 	TArray<FSteeringOutput> Outputs;
 	Outputs.Reserve(Snapshots.Num());
-	const float SeparationRadius = FMath::Max(0.0f, Tuning.SeparationDistanceCm);
-	const float NeighborRadius = FMath::Max(0.0f, Tuning.NeighborRadiusCm);
-	const float PredictionSeconds = FMath::Max(0.0f, Tuning.PredictedSeparationSeconds);
-	const float PredictionClearance = FMath::Max(0.0f, Tuning.PredictedSeparationClearanceCm);
 	const int32 AvoidanceLimit = CVarExhaustiveAvoidance.GetValueOnGameThread() != 0 ? 0 : FMath::Max(1, Tuning.MaxAvoidanceCandidates);
-	TArray<FVector> EscapeDirections;
-	BoidFlight::AppendEscapeDirections(EscapeDirections);
-	double MaximumRadius = 0.0;
-	double MaximumSpeed = 0.0;
-	bool bFiniteEnvelopes = true;
+	TArray<FBoidSteeringNeighbor> SteeringSnapshots;
+	SteeringSnapshots.Reserve(Snapshots.Num());
+	for (const FBoidSnapshot& Snapshot : Snapshots) SteeringSnapshots.Add({Snapshot.Position, Snapshot.Velocity, Snapshot.Radius, Snapshot.Id, Snapshot.bSteeringActive});
+	SteeringService->BeginStep(SteeringSnapshots, Tuning.NeighborCellSizeCm, CVarUseSpatialNeighbors.GetValueOnGameThread() != 0);
+	for (int32 SelfIndex = 0; SelfIndex < Snapshots.Num(); ++SelfIndex)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSpatialIndexRebuild);
-		NeighborSamples.Reset(Snapshots.Num());
-		for (const FBoidSnapshot& Snapshot : Snapshots)
-		{
-			NeighborSamples.Add({Snapshot.Position, Snapshot.Id});
-			const double Speed = Snapshot.Velocity.Size();
-			bFiniteEnvelopes &= FMath::IsFinite(Speed) && FMath::IsFinite(Snapshot.Radius);
-			MaximumRadius = FMath::Max(MaximumRadius, static_cast<double>(Snapshot.Radius));
-			MaximumSpeed = FMath::Max(MaximumSpeed, Speed);
-		}
-		const bool bUseGrid = Snapshots.Num() >= 32 && CVarUseSpatialNeighbors.GetValueOnGameThread() != 0 && bFiniteEnvelopes;
-		NeighborIndex.Rebuild(NeighborSamples, Tuning.NeighborCellSizeCm, bUseGrid);
-	}
-	for (const FBoidSnapshot& Self : Snapshots)
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmSteeringEvaluation);
+		const FBoidSnapshot& Self = Snapshots[SelfIndex];
 		FSteeringOutput& Output = Outputs.AddDefaulted_GetRef();
-		if (!Self.bSteeringActive)
-		{
-			continue;
-		}
+		if (!Self.bSteeringActive) continue;
 		AFlyingBoid* Boid = Self.Boid.Get();
 		Output.bSteeringActive = true;
 		UBoidSteeringProfile* Profile = ResolveSteeringProfile(Boid);
 		if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Self.Id)) Debug->EffectiveProfile = GetNameSafe(Profile);
 		Boid->PrepareSteeringRuntime(Profile);
-		if (Profile)
+		FBoidSteeringInput SteeringInput;
+		SteeringInput.Position = Self.Position;
+		SteeringInput.Velocity = Self.Velocity;
+		SteeringInput.Heading = Self.Heading;
+		SteeringInput.TargetPosition = Self.TargetPosition;
+		SteeringInput.bHasTarget = Self.bHasTarget;
+		SteeringInput.Goal = Self.Goal;
+		SteeringInput.bHasGoal = Self.bHasGoal && !Self.bDestinationBlocked;
+		SteeringInput.bContinuousGoal = Self.bContinuousGoal;
+		SteeringInput.NavigationPhase = Self.NavigationPhase;
+		SteeringInput.OrbitContext = Self.OrbitContext;
+		SteeringInput.bPreferNavigationGoal = Self.bPreferNavigationGoal || Self.bRetreating;
+		SteeringInput.FlightSpeedLimitCmPerSec = FMath::Min(FMath::Max(0.f, Tuning.CruiseSpeedCmPerSec),
+		                                                    FMath::Max(0.f, Boid->MaxSpeedCmPerSec));
+		SteeringInput.bCoordinatedCombat = Self.bCoordinatedCombat;
+		SteeringInput.bHasDesiredSpeed = Self.NavigationPhase == EBoidNavigationPhase::Orbit || Self.NavigationPhase
+			== EBoidNavigationPhase::Retreat;
+		SteeringInput.DesiredSpeedCmPerSec = Self.DesiredSpeed;
+		SteeringInput.DeltaTime = StepTime;
+		SteeringInput.AgentId = Self.Id;
+		SteeringInput.Radius = Self.Radius;
+		const FBoidSteeringServiceResult Steering = SteeringService->Evaluate(SelfIndex, SteeringInput, Profile,
+			[Boid](int32 Index) -> FBoidSteeringRuntimeState& { return Boid->GetSteeringRuntimeState(Index); },
+			[&](int32 Index) { return HasWallBetween(GetWorld(), Self, Snapshots[Index]); });
+		LastFrameNeighborCellsVisited += Steering.QueryStats.CellsVisited;
+		LastFrameNeighborSamplesExamined += Steering.QueryStats.SamplesExamined;
+		LastFrameNeighborPairChecks += Steering.PairChecks;
+		LastFrameNeighborWallTraces += Steering.WallTraces;
+		LastFrameAcceptedNeighbors += Steering.AcceptedNeighbors;
+		Output.ProfileIntent = Steering.ProfileIntent;
+		Output.Separation = Steering.Separation;
+		Output.Alignment = Steering.Alignment;
+		Output.Cohesion = Steering.Cohesion;
+		Output.DesiredSpeed = Steering.DesiredSpeed;
+		Output.bHasDesiredSpeed = Steering.bHasDesiredSpeed;
+		const bool bCriticalSeparation = Steering.bCriticalSeparation;
+		FVector Desired = Steering.Desired;
+		if (!Steering.ConfigurationProblem.IsEmpty())
 		{
-			FBoidSteeringInput SteeringInput;
-			SteeringInput.Position = Self.Position;
-			SteeringInput.Velocity = Self.Velocity;
-			SteeringInput.Heading = Self.Heading;
-			SteeringInput.TargetPosition = Self.TargetPosition;
-			SteeringInput.bHasTarget = Self.bHasTarget;
-			SteeringInput.Goal = Self.Goal;
-			SteeringInput.bHasGoal = Self.bHasGoal && !Self.bDestinationBlocked;
-			SteeringInput.bContinuousGoal = Self.bContinuousGoal;
-			SteeringInput.NavigationPhase = Self.NavigationPhase;
-			SteeringInput.OrbitContext = Self.OrbitContext;
-			SteeringInput.bPreferNavigationGoal = Self.bPreferNavigationGoal || Self.bRetreating;
-			SteeringInput.FlightSpeedLimitCmPerSec = FMath::Min(FMath::Max(0.f, Tuning.CruiseSpeedCmPerSec),
-			                                                    FMath::Max(0.f, Boid->MaxSpeedCmPerSec));
-			SteeringInput.bCoordinatedCombat = Self.bCoordinatedCombat;
-			SteeringInput.bHasDesiredSpeed = Self.NavigationPhase == EBoidNavigationPhase::Orbit || Self.NavigationPhase
-				== EBoidNavigationPhase::Retreat;
-			SteeringInput.DesiredSpeedCmPerSec = Self.DesiredSpeed;
-			SteeringInput.DeltaTime = StepTime;
-			SteeringInput.AgentId = Self.Id;
-			FVector ProfileIntent = FVector::ZeroVector;
-			for (int32 BehaviorIndex = 0; BehaviorIndex < Profile->Behaviors.Num(); ++BehaviorIndex)
-			{
-				const UBoidSteeringBehavior* Behavior = Profile->Behaviors[BehaviorIndex].Behavior;
-				if (IsValid(Behavior) && FMath::IsFinite(Behavior->Weight) && Behavior->Weight > 0.f
-					&& (!Self.bCoordinatedCombat || Behavior->SupportsNavigationPhase(Self.NavigationPhase)))
-				{
-					const FBoidSteeringResult Contribution = Behavior->EvaluateWithResult(
-						SteeringInput, Boid->GetSteeringRuntimeState(BehaviorIndex));
-					if (Contribution.Direction.ContainsNaN()) continue;
-					ProfileIntent += Contribution.Direction;
-					if (Contribution.bHasDesiredSpeed && FMath::IsFinite(Contribution.DesiredSpeedCmPerSec)
-						&& (!Self.bCoordinatedCombat || Behavior->IsPrimaryMovementForPhase(Self.NavigationPhase)))
-					{
-						Output.DesiredSpeed = Output.bHasDesiredSpeed
-							                      ? FMath::Min(Output.DesiredSpeed, Contribution.DesiredSpeedCmPerSec)
-							                      : Contribution.DesiredSpeedCmPerSec;
-						Output.bHasDesiredSpeed = true;
-					}
-				}
-			}
-			// Goal preference belongs to the behavior input; profiles own their direction contributions.
-			Output.ProfileIntent = ProfileIntent;
+			const FString Problem = GetPathNameSafe(Profile) + TEXT(": ") + Steering.ConfigurationProblem;
+			if (!ReportedSteeringProblems.Contains(Problem)) { ReportedSteeringProblems.Add(Problem); UE_LOG(LogTemp, Error, TEXT("Invalid steering profile %s"), *Problem); }
 		}
-		FVector SeparationSum = FVector::ZeroVector;
-		FVector AlignmentSum = FVector::ZeroVector;
-		FVector CohesionPositionSum = FVector::ZeroVector;
-		FVector CriticalDirection = FVector::ZeroVector;
-		float NearestCriticalDistance = TNumericLimits<float>::Max();
-		int32 AlignmentCount = 0;
-		int32 CohesionCount = 0;
-		bool bCloseApproach = false;
-		bool bOverlappingNeighbor = false;
-		TArray<const FBoidSnapshot*> VisibleNeighbors;
-		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmNeighborGathering);
-			const double PhysicalEnvelope = Self.Radius + MaximumRadius + BoidFlight::ContactSkinCm;
-			const double SpacingEnvelope = FMath::Max3(static_cast<double>(SeparationRadius), PhysicalEnvelope, static_cast<double>(PredictionClearance));
-			const double QueryRadius = FMath::Max(static_cast<double>(NeighborRadius), SpacingEnvelope + (Self.Velocity.Size() + MaximumSpeed) * PredictionSeconds) + 1.0;
-			const FSwarmSpatialQueryStats Stats = NeighborIndex.QueryRadius(Self.Position, QueryRadius, NeighborCandidates);
-			LastFrameNeighborCellsVisited += Stats.CellsVisited;
-			LastFrameNeighborSamplesExamined += Stats.SamplesExamined;
-		}
-		for (const int32 NeighborIndexInSnapshot : NeighborCandidates)
-		{
-			const FBoidSnapshot& Neighbor = Snapshots[NeighborIndexInSnapshot];
-			if (Neighbor.Id == Self.Id)
-			{
-				continue;
-			}
-			++LastFrameNeighborPairChecks;
-			const FVector Offset = Self.Position - Neighbor.Position;
-			const float Distance = Offset.Size();
-			const float PhysicalClearance = Self.Radius + Neighbor.Radius + BoidFlight::ContactSkinCm;
-			const float PairSeparationRadius = FMath::Max(SeparationRadius, PhysicalClearance);
-			const FVector RelativeVelocity = Self.Velocity - Neighbor.Velocity;
-			const float SearchRadius = FMath::Max(NeighborRadius,
-			                                      PairSeparationRadius + static_cast<float>(RelativeVelocity.Size()) *
-			                                      PredictionSeconds);
-			if (Distance > SearchRadius) continue;
-			++LastFrameNeighborWallTraces;
-			if (HasWallBetween(GetWorld(), Self, Neighbor))
-			{
-				continue;
-			}
-			VisibleNeighbors.Add(&Neighbor);
-			++LastFrameAcceptedNeighbors;
-			const FVector Away = Distance > UE_SMALL_NUMBER
-				                     ? Offset / Distance
-				                     : OverlapSeparationDirection(Self.Id, Neighbor.Id);
-			if (Distance < PairSeparationRadius)
-			{
-				const float Strength = 1.0f - Distance / PairSeparationRadius;
-				SeparationSum += Away * Strength * Strength;
-			}
-			bOverlappingNeighbor |= Distance < PhysicalClearance;
-			bool bPairCritical = Distance < FMath::Max(PredictionClearance, PhysicalClearance);
-			if (PredictionSeconds > UE_SMALL_NUMBER && FVector::DotProduct(Offset, RelativeVelocity) < 0.0f)
-			{
-				const float Time = FMath::Clamp(static_cast<float>(-FVector::DotProduct(Offset, RelativeVelocity)
-					                                / FMath::Max(RelativeVelocity.SizeSquared(),
-					                                             static_cast<double>(UE_SMALL_NUMBER))), 0.0f,
-				                                PredictionSeconds);
-				const FVector PredictedOffset = Offset + RelativeVelocity * Time;
-				const float PredictedDistance = PredictedOffset.Size();
-				const float PairClearance = FMath::Max(PredictionClearance, PhysicalClearance);
-				if (PredictedDistance < PairClearance)
-				{
-					const FVector PredictedAway = PredictedDistance > UE_SMALL_NUMBER
-						                              ? PredictedOffset / PredictedDistance
-						                              : Away;
-					SeparationSum += PredictedAway * 2.0f * (1.0f - PredictedDistance / PairClearance);
-					bPairCritical = true;
-				}
-			}
-			if (bPairCritical)
-			{
-				bCloseApproach = true;
-				if (Distance < NearestCriticalDistance)
-				{
-					NearestCriticalDistance = Distance;
-					CriticalDirection = Away;
-				}
-			}
-			if (Neighbor.bSteeringActive && Distance < NeighborRadius)
-			{
-				if (!Neighbor.Velocity.IsNearlyZero())
-				{
-					AlignmentSum += Neighbor.Velocity.GetSafeNormal();
-					++AlignmentCount;
-				}
-				if (Distance >= PairSeparationRadius)
-				{
-					CohesionPositionSum += Neighbor.Position;
-					++CohesionCount;
-				}
-			}
-		}
-		Output.Separation = SeparationSum.GetClampedToMaxSize(1.0f);
-		if (bCloseApproach && Output.Separation.IsNearlyZero())
-		{
-			Output.Separation = CriticalDirection;
-		}
-		Output.Alignment = AlignmentCount ? AlignmentSum.GetSafeNormal() : FVector::ZeroVector;
-		Output.Cohesion = CohesionCount
-			                  ? (CohesionPositionSum / CohesionCount - Self.Position).GetSafeNormal()
-			                  : FVector::ZeroVector;
-		const bool bCriticalSeparation = bOverlappingNeighbor || (bCloseApproach && Tuning.SeparationWeight > 0.0f);
-		FVector Desired = (Output.ProfileIntent
-			+ Output.Separation * FMath::Max(0.0f, Tuning.SeparationWeight) * (bCloseApproach ? 3.0f : 1.0f)
-			+ Output.Alignment * FMath::Max(0.0f, Tuning.AlignmentWeight)
-			+ Output.Cohesion * FMath::Max(0.0f, Tuning.CohesionWeight)).GetSafeNormal();
-		if (bCriticalSeparation && !Output.Separation.IsNearlyZero())
-		{
-			Desired = Output.Separation.GetSafeNormal();
-		}
-		if (Desired.IsNearlyZero())
-		{
-			Desired = Self.Heading;
-		}
-
 		const float CruiseSpeed = FMath::Min(FMath::Max(0.0f, Tuning.CruiseSpeedCmPerSec),
 		                                     FMath::Max(0.0f, Boid->MaxSpeedCmPerSec));
 		const float Brake = FMath::Max(1.0f, Boid->BrakingAccelerationCmPerSec2 * Tuning.BrakingScale);
 		const float Speed = Self.Velocity.Size();
 		const float MinLookahead = FMath::Max(1.0f, FMath::Min(Tuning.MinLookaheadCm, Tuning.MaxLookaheadCm));
 		const float MaxLookahead = FMath::Max(MinLookahead, FMath::Max(Tuning.MinLookaheadCm, Tuning.MaxLookaheadCm));
-		const float Lookahead = FMath::Clamp(Speed * 0.6f + Speed * Speed / (2.0f * Brake),
-		                                     MinLookahead, MaxLookahead);
+		const float SafetyLookahead = FMath::Clamp(Speed * .6f + Speed * Speed / (2.f * Brake), MinLookahead, MaxLookahead);
+		const float OptionalLookahead = Steering.Avoidance ? FMath::Clamp(Speed * .6f + Speed * Speed / (2.f * Brake), Steering.Avoidance->MinLookaheadCm, Steering.Avoidance->MaxLookaheadCm) : SafetyLookahead;
+		// One cached query per direction serves both independent horizons.
+		const float Lookahead = FMath::Max(SafetyLookahead, OptionalLookahead);
 		const FCollisionQueryParams QueryParams = ObstacleQuery(Self);
 		const USphereComponent* Sphere = Self.Boid->CollisionSphere;
 		const FCollisionResponseParams Responses(Sphere->GetCollisionResponseToChannels());
@@ -969,63 +800,33 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		};
 		const FVector Forward = Speed > 1.0f ? Self.Velocity / Speed : Self.Heading;
 		LastFrameMandatoryClearanceRequests += 2;
-		const float ForwardClearance = Probe(Forward);
-		const float IntentClearance = Probe(Desired);
+		const float ForwardClearance = FMath::Min(Probe(Forward), SafetyLookahead);
+		const float IntentClearance = FMath::Min(Probe(Desired), SafetyLookahead);
 		Output.ProbeEnd = Self.Position + Forward * ForwardClearance;
-		Output.bThreatened = FMath::Min(ForwardClearance, IntentClearance) < Lookahead - BoidFlight::ContactSkinCm;
+		Output.bThreatened = FMath::Min(ForwardClearance, IntentClearance) < SafetyLookahead - BoidFlight::ContactSkinCm;
+		const bool bOptionalThreatened = Steering.Avoidance && FMath::Min(Probe(Forward), Probe(Desired)) < OptionalLookahead - BoidFlight::ContactSkinCm;
 		float ChosenClearance = IntentClearance;
+		float ThreatenedSpeedScale = FMath::Clamp(ChosenClearance / SafetyLookahead, .25f, 1.f);
 		bool bAvoidanceBlocked = false;
-		if (Output.bThreatened || bCriticalSeparation)
+		if (Steering.Avoidance && (bOptionalThreatened || bCriticalSeparation))
 		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(SwarmAvoidanceSelection);
-			AvoidanceCandidates.Reset();
-			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Desired, 0);
-			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Forward, 2);
-			SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, -Forward);
-			const bool bHeld = Boid->GetAvoidanceHoldSeconds() > 0.0f;
-			if (bHeld) SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Boid->GetHeldAvoidanceDirection(), 1);
-			for (const FVector& Direction : EscapeDirections) SwarmAvoidanceCandidates::AddDirection(AvoidanceCandidates, Direction);
-			for (FSwarmAvoidanceCandidate& Candidate : AvoidanceCandidates)
-			{
-				const FVector CandidateVelocity = Candidate.Direction * CruiseSpeed;
-				for (const FBoidSnapshot* Neighbor : VisibleNeighbors)
-				{
-					const FVector Offset = Self.Position - Neighbor->Position;
-					const FVector Relative = CandidateVelocity - Neighbor->Velocity;
-					const float Time = FMath::Clamp(static_cast<float>(-FVector::DotProduct(Offset, Relative) / FMath::Max(Relative.SizeSquared(), static_cast<double>(UE_SMALL_NUMBER))), 0.0f, PredictionSeconds);
-					const float PredictedDistance = (Offset + Relative * Time).Size();
-					const float ClearanceNeeded = FMath::Max(PredictionClearance, Self.Radius + Neighbor->Radius);
-					Candidate.Crowding += FMath::Max(0.0f, 1.0f - PredictedDistance / FMath::Max(1.0f, ClearanceNeeded));
-					if (Candidate.Crowding >= 2.0f) break;
-				}
-				const float Continuity = bHeld ? static_cast<float>(FVector::DotProduct(Candidate.Direction, Boid->GetHeldAvoidanceDirection())) : 0.0f;
-				Candidate.Rank = 0.8f * FVector::DotProduct(Candidate.Direction, Desired) + 0.6f * Continuity - 2.0f * FMath::Min(Candidate.Crowding, 2.0f);
-			}
-			SwarmAvoidanceCandidates::Select(AvoidanceCandidates, AvoidanceLimit, AvoidanceOrder);
-			LastFrameAvoidanceCandidates += AvoidanceOrder.Num();
-			FVector BestDirection = Desired;
-			float BestScore = -TNumericLimits<float>::Max();
-			bool bFoundUsable = false;
-			ChosenClearance = 0.0f;
-			for (int32 CandidateIndex : AvoidanceOrder)
-			{
-				const FSwarmAvoidanceCandidate& Candidate = AvoidanceCandidates[CandidateIndex];
-				const float Clearance = Probe(Candidate.Direction);
-				const bool bUsable = Clearance > BoidFlight::ContactSkinCm;
-				if (bFoundUsable && !bUsable) continue;
-				const float Score = 3.0f * Clearance / Lookahead + Candidate.Rank;
-				if ((bUsable && !bFoundUsable) || Score > BestScore)
-				{
-					bFoundUsable = bUsable;
-					BestScore = Score;
-					BestDirection = Candidate.Direction;
-					ChosenClearance = Clearance;
-				}
-			}
-			bAvoidanceBlocked = !bFoundUsable;
-			Desired = BestDirection;
-			Output.Avoidance = BestDirection;
-			if (bFoundUsable && (!bHeld || FVector::DotProduct(BestDirection, Boid->GetHeldAvoidanceDirection()) < 0.98f)) Boid->HoldAvoidanceDirection(BestDirection, Tuning.AvoidanceHoldSeconds);
+			auto OptionalProbe = [&](const FVector& Direction) { return FMath::Min(Probe(Direction), OptionalLookahead); };
+			const FBoidAvoidanceResult Avoidance = SteeringService->ApplyAvoidance(Steering, Boid->GetSteeringRuntimeState(Steering.AvoidanceIndex), Desired, Forward, CruiseSpeed, OptionalLookahead, AvoidanceLimit, OptionalProbe);
+			LastFrameAvoidanceCandidates += Avoidance.Candidates;
+			bAvoidanceBlocked = Avoidance.bBlocked;
+			Desired = Avoidance.Direction;
+			Output.Avoidance = Avoidance.Direction;
+			ChosenClearance = Avoidance.Clearance;
+			ThreatenedSpeedScale = FMath::Clamp(ChosenClearance / OptionalLookahead, .25f, 1.f);
+		}
+		if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Self.Id))
+		{
+			Debug->SteeringConfigurationProblem = Steering.ConfigurationProblem;
+			Debug->OptionalSeparation = Steering.Separation;
+			Debug->OptionalAlignment = Steering.Alignment;
+			Debug->OptionalCohesion = Steering.Cohesion;
+			Debug->OptionalAvoidance = Output.Avoidance;
+			Debug->bPhysicalOverlapProtection = Steering.bPhysicalOverlap;
 		}
 
 		Output.Heading = Boid->TurnFlightHeading(Desired, Tuning.MaxTurnRateDegPerSec, StepTime);
@@ -1034,7 +835,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			                                                   Speed * Tuning.SteeringResponseSeconds)));
 		const FVector SteeringDirection = bEmergency ? Desired : Output.Heading;
 		++LastFrameMandatoryClearanceRequests;
-		const float SteeringClearance = Probe(SteeringDirection);
+		const float SteeringClearance = FMath::Min(Probe(SteeringDirection), SafetyLookahead);
 		// Clearance is sphere-center travel; the probe already accounts for radius.
 		const float SafeSpeed = FMath::Sqrt(2.0f * Brake * FMath::Max(0.0f,
 		                                                              SteeringClearance - BoidFlight::ContactSkinCm));
@@ -1091,13 +892,18 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			Output.bIntentionalStop = true;
 			Output.Constraint = EBoidCombatMovementConstraint::Hold;
 		}
-		if (Output.bThreatened)
+		if (Output.bThreatened || bOptionalThreatened)
 		{
-			Output.TargetSpeed = FMath::Min(Output.TargetSpeed,
-			                                CruiseSpeed * FMath::Clamp(ChosenClearance / Lookahead, 0.25f, 1.0f));
+			Output.TargetSpeed = FMath::Min(Output.TargetSpeed, CruiseSpeed * ThreatenedSpeedScale);
 		}
 		if (bAvoidanceBlocked) { Output.TargetSpeed = 0.0f; Output.Constraint = EBoidCombatMovementConstraint::Obstacle; }
 		if (bCriticalSeparation) Output.Constraint = EBoidCombatMovementConstraint::EmergencySeparation;
+		if (!Steering.ConfigurationProblem.IsEmpty())
+		{
+			Output.TargetSpeed = 0.f;
+			Output.bIntentionalStop = true;
+			Output.Constraint = EBoidCombatMovementConstraint::Hold;
+		}
 		const float Accel = FMath::Max(0.0f, Boid->MaxAccelerationCmPerSec2 * Tuning.AccelerationScale);
 		const float Limit = Output.TargetSpeed < Speed ? FMath::Max(Accel, Brake) : Accel;
 		Output.Acceleration = ((SteeringDirection * Output.TargetSpeed - Self.Velocity)
@@ -1214,7 +1020,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 				if (Agent.NoProgressSeconds >= FMath::Max(0.1f, Tuning.StuckProgressSeconds))
 				{
 					Agent.NoProgressSeconds = 0.0f;
-					Boid->HoldAvoidanceDirection(FVector::ZeroVector, 0.0f);
+					Boid->ResetSteeringAvoidanceRuntime();
 					++Agent.RecoveryCount;
 					if (Snapshots[Index].bPlannerControlled)
 					{
