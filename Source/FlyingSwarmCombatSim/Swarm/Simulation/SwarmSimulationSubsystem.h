@@ -6,6 +6,7 @@
 #include "Swarm/Simulation/SwarmSpatialIndex.h"
 #include "Swarm/Simulation/SwarmCollisionQueries.h"
 #include "Swarm/Flight/SwarmAvoidanceCandidates.h"
+#include "Swarm/Debug/SwarmMovementDebug.h"
 #include "Engine/HitResult.h"
 #include "Swarm/Positioning/BoidRangedPositioning.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
@@ -118,6 +119,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Swarm")
 	int32 GetAgentId(const AFlyingBoid* Boid) const;
 	void GetDebugAgents(TArray<FSwarmDebugAgent>& OutAgents) const;
+	// Each local inspector retains only its selected agent's latest movement step.
+	void SetDebugObservedAgent(UObject* Observer, AFlyingBoid* Boid);
+	bool GetDebugMovementSnapshot(const AFlyingBoid* Boid, FSwarmMovementDebugSnapshot& OutSnapshot) const;
 	void AcquireDebugPresentation();
 	void ReleaseDebugPresentation();
 	UFUNCTION(BlueprintPure, Category = "Swarm")
@@ -286,6 +290,12 @@ private:
 	int32 NextAgentId = 1;
 	bool bEndingPlay = false;
 	int32 DebugPresentationUsers = 0;
+	TMap<TWeakObjectPtr<UObject>, TWeakObjectPtr<AFlyingBoid>> DebugObservers;
+	TMap<int32, FSwarmMovementDebugSnapshot> DebugMovementSamples;
+	uint64 DebugStepNumber = 0;
+	void PruneDebugObservations();
+	void BeginDebugMovementStep(float StepTime);
+	void FinishDebugMovementStep();
 	bool IsDebugPresentationSuppressed() const { return DebugPresentationUsers > 0; }
 	UPROPERTY(Transient)
 	TObjectPtr<UBoidSteeringProfile> FallbackSteeringProfile;

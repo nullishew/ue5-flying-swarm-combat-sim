@@ -5,6 +5,7 @@
 #include "UI/SwarmDebugOverlayWidget.h"
 #include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 
+class AFlyingBoid;
 class APlayerController;
 class UMeshComponent;
 struct FSwarmDebugSettings;
@@ -13,7 +14,7 @@ struct FSwarmDebugSettings;
 class FSwarmDebugPresenter
 {
 public:
-	void Update(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FSwarmDebugSettings& Settings, bool bCollision, bool bAgentState, bool bSpatial, bool bOutlineReady, const FString& OutlineFailure);
+	void Update(APlayerController& Controller, USwarmDebugOverlayWidget& Overlay, const FSwarmDebugSettings& Settings, bool bCollision, bool bAgentState, bool bSpatial, bool bOutlineReady, const FString& OutlineFailure, AFlyingBoid* SelectedAgent, int32 SelectedAgentId);
 	void Shutdown();
 	/** Restore agent rendering without stopping the independent badge/spatial views. */
 	void DisableCollision();
@@ -30,5 +31,10 @@ private:
 	TMap<TWeakObjectPtr<UMeshComponent>, FOriginalMeshState> OriginalMeshes;
 	TArray<FSwarmDebugAgent> Agents;
 	TArray<FSwarmDebugBadge> FrameBadges;
+	TArray<FSwarmDebugLabel> FrameLabels;
 	TArray<FVector> RemainingRoute;
+	TArray<FString> InspectorLines;
+	int32 InspectorAgentId = INDEX_NONE;
+	double NextInspectorRefresh = 0.;
+	bool bInspectorSampleFresh = false;
 };

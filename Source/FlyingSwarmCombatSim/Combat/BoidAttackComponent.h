@@ -17,6 +17,7 @@ struct FBoidDebugAttackState
 	bool bHasCadence = false;
 	bool bCanEngage = false;
 	float SecondsUntilAttempt = 0.f;
+	float AttemptIntervalSeconds = 0.f;
 };
 
 /** Fires while enabled by the Combat StateTree task and ranged movement is active; never moves the boid or completes a StateTree state. */
@@ -96,6 +97,7 @@ private:
 	TWeakObjectPtr<USwarmSimulationSubsystem> SimulationSubscription;
 	FDelegateHandle SimulationHandle;
 	double NextAttemptTime = 0.0;
+	float ScheduledAttemptIntervalSeconds = 0.f;
 
 	bool InitializeRandomState();
 	void ResetCadence(EBoidAttackRejection Reason);

@@ -21,6 +21,7 @@ class UStateTreeComponent;
 class UBoidFlightMovementComponent;
 class UBoidAttackComponent;
 class UBoidSteeringProfile;
+struct FSwarmMovementCommitObservation;
 class USoundBase;
 class USoundAttenuation;
 
@@ -69,7 +70,7 @@ public:
 		float BrakingScale) const;
 	void ApplyAcceleration(const FVector& DesiredAcceleration, float DeltaTime, float SpeedScale);
 	void ApplyWanderAcceleration(const FVector& DesiredAcceleration, float DeltaTime, float CruiseSpeed,
-		const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed);
+		const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed, FSwarmMovementCommitObservation* Observation = nullptr);
 	bool ConstrainWanderToBounds(const UBoxComponent* Bounds, float BoundsMarginCm);
 	bool RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed, int32 MaxCandidates = 0);
 	void InitializeWander(int32 InAgentId, int32 InitialSeed);

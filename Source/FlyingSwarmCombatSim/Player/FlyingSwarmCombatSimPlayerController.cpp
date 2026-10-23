@@ -29,6 +29,10 @@
 #include "FlyingSwarmCombatSim.h"
 #include "UnrealClient.h"
 #include "Widgets/Input/SVirtualJoystick.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
+#include "Swarm/FlyingBoid.h"
+#include "Swarm/Debug/SwarmDebugPresentation.h"
+#include "Swarm/Simulation/SwarmSimulationSubsystem.h"
 
 void FSwarmDebugPresenterDeleter::operator()(FSwarmDebugPresenter* Presenter) const
 {
@@ -145,6 +149,16 @@ void AFlyingSwarmCombatSimPlayerController::TryBindDebugInput()
 	{
 		EnhancedInput->BindAction(ToggleSwarmCollisionDebugAction, ETriggerEvent::Started, this,
 		                          &ThisClass::ToggleSwarmCollisionDebug);
+	}
+	if (SelectSwarmDebugAgentAction && SelectSwarmDebugAgentAction->ValueType == EInputActionValueType::Boolean)
+	{
+		EnhancedInput->BindAction(SelectSwarmDebugAgentAction, ETriggerEvent::Started, this,
+		                          &ThisClass::SelectSwarmDebugAgent);
+	}
+	if (ClearSwarmDebugAgentAction && ClearSwarmDebugAgentAction->ValueType == EInputActionValueType::Boolean)
+	{
+		EnhancedInput->BindAction(ClearSwarmDebugAgentAction, ETriggerEvent::Started, this,
+		                          &ThisClass::ClearSwarmDebugAgent);
 	}
 }
 
@@ -545,18 +559,23 @@ void AFlyingSwarmCombatSimPlayerController::EndPlay(const EEndPlayReason::Type E
 	Super::EndPlay(EndPlayReason);
 }
 
+bool AFlyingSwarmCombatSimPlayerController::HasActiveSwarmDebug() const
+{
+	return bSwarmCollision || bSwarmState || bSwarmSpatial || SelectedDebugAgent.IsValid();
+}
+
 void AFlyingSwarmCombatSimPlayerController::ToggleSwarmStateDebug()
 {
 	if (!IsLocalPlayerController() || !HasGameFocus()) return;
 	bSwarmState = !bSwarmState;
-	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) StopSwarmDebug();
+	if (!HasActiveSwarmDebug()) StopSwarmDebug();
 }
 
 void AFlyingSwarmCombatSimPlayerController::ToggleSwarmSpatialDebug()
 {
 	if (!IsLocalPlayerController() || !HasGameFocus()) return;
 	bSwarmSpatial = !bSwarmSpatial;
-	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) StopSwarmDebug();
+	if (!HasActiveSwarmDebug()) StopSwarmDebug();
 }
 
 void AFlyingSwarmCombatSimPlayerController::ToggleSwarmCollisionDebug()
@@ -564,7 +583,77 @@ void AFlyingSwarmCombatSimPlayerController::ToggleSwarmCollisionDebug()
 	if (!IsLocalPlayerController() || !HasGameFocus()) return;
 	bSwarmCollision = !bSwarmCollision;
 	if (!bSwarmCollision) DisableCollision();
-	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) StopSwarmDebug();
+	if (!HasActiveSwarmDebug()) StopSwarmDebug();
+}
+
+void AFlyingSwarmCombatSimPlayerController::SelectSwarmDebugAgent()
+{
+	if (!IsLocalPlayerController() || !HasGameFocus() || !GetWorld()) return;
+	USwarmSimulationSubsystem* Simulation = GetWorld()->GetSubsystem<USwarmSimulationSubsystem>();
+	if (!Simulation) return;
+
+	const FGeometry PlayerGeometry = UWidgetLayoutLibrary::GetPlayerScreenWidgetGeometry(this);
+	const FVector2D ViewSize = PlayerGeometry.GetLocalSize();
+	if (ViewSize.X <= 0.f || ViewSize.Y <= 0.f) return;
+
+	FVector2D Aim = ViewSize * .5f;
+	if (bShowMouseCursor)
+	{
+		Aim = PlayerGeometry.AbsoluteToLocal(UWidgetLayoutLibrary::GetMousePositionOnPlatform());
+	}
+	if (Aim.X < 0.f || Aim.Y < 0.f || Aim.X >= ViewSize.X || Aim.Y >= ViewSize.Y) return;
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	GetPlayerViewPoint(ViewLocation, ViewRotation);
+	const FVector ViewForward = ViewRotation.Vector();
+	const float Radius = FMath::IsFinite(SwarmDebug.InspectorSelectionRadius)
+		                     ? FMath::Max(1.f, SwarmDebug.InspectorSelectionRadius)
+		                     : 80.f;
+	double BestAimDistanceSquared = FMath::Square(static_cast<double>(Radius));
+	double BestWorldDistanceSquared = TNumericLimits<double>::Max();
+	AFlyingBoid* BestBoid = nullptr;
+	int32 BestId = INDEX_NONE;
+
+	TArray<FSwarmDebugAgent> Agents;
+	Simulation->GetDebugAgents(Agents);
+	for (const FSwarmDebugAgent& Agent : Agents)
+	{
+		AFlyingBoid* Boid = Agent.Boid.Get();
+		if (!IsValid(Boid) || !Boid->IsAlive() || !Simulation->IsAgentRegistered(Boid)) continue;
+
+		const FVector Location = Boid->GetActorLocation();
+		if (Location.ContainsNaN() || FVector::DotProduct(Location - ViewLocation, ViewForward) <= 0.f) continue;
+
+		FVector2D Screen;
+		if (!UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(this, Location, Screen, true)) continue;
+		if (Screen.X < 0.f || Screen.Y < 0.f || Screen.X >= ViewSize.X || Screen.Y >= ViewSize.Y) continue;
+
+		const double AimDistanceSquared = FVector2D::DistSquared(Screen, Aim);
+		const double WorldDistanceSquared = FVector::DistSquared(Location, ViewLocation);
+		if (!SwarmDebugPresentation::InspectorCandidateWins(AimDistanceSquared, WorldDistanceSquared, Agent.Id, BestAimDistanceSquared, BestWorldDistanceSquared, BestId)) continue;
+
+		BestBoid = Boid;
+		BestId = Agent.Id;
+		BestAimDistanceSquared = AimDistanceSquared;
+		BestWorldDistanceSquared = WorldDistanceSquared;
+	}
+
+	if (!BestBoid) return;
+	SelectedDebugAgent = BestBoid;
+	SelectedDebugAgentId = BestId;
+	Simulation->SetDebugObservedAgent(this, BestBoid);
+}
+
+void AFlyingSwarmCombatSimPlayerController::ClearSwarmDebugAgent()
+{
+	if (UWorld* World = GetWorld())
+	{
+		if (USwarmSimulationSubsystem* Simulation = World->GetSubsystem<USwarmSimulationSubsystem>()) Simulation->SetDebugObservedAgent(this, nullptr);
+	}
+	SelectedDebugAgent.Reset();
+	SelectedDebugAgentId = INDEX_NONE;
+	if (!HasActiveSwarmDebug()) StopSwarmDebug();
 }
 
 void AFlyingSwarmCombatSimPlayerController::DisableCollision()
@@ -578,6 +667,12 @@ void AFlyingSwarmCombatSimPlayerController::DisableCollision()
 
 void AFlyingSwarmCombatSimPlayerController::StopSwarmDebug()
 {
+	if (UWorld* World = GetWorld())
+	{
+		if (USwarmSimulationSubsystem* Simulation = World->GetSubsystem<USwarmSimulationSubsystem>()) Simulation->SetDebugObservedAgent(this, nullptr);
+	}
+	SelectedDebugAgent.Reset();
+	SelectedDebugAgentId = INDEX_NONE;
 	if (SwarmDebugPresenter) SwarmDebugPresenter->Shutdown();
 	if (SwarmDebugOverlay)
 	{
@@ -590,7 +685,17 @@ void AFlyingSwarmCombatSimPlayerController::StopSwarmDebug()
 void AFlyingSwarmCombatSimPlayerController::UpdateSwarmDebug(UWorld* World, ELevelTick TickType, float DeltaSeconds)
 {
 	if (World != GetWorld() || !IsLocalPlayerController() || IsActorBeingDestroyed()) return;
-	if (!bSwarmCollision && !bSwarmState && !bSwarmSpatial) return;
+	if (SelectedDebugAgentId != INDEX_NONE)
+	{
+		AFlyingBoid* Selected = SelectedDebugAgent.Get();
+		USwarmSimulationSubsystem* Simulation = World->GetSubsystem<USwarmSimulationSubsystem>();
+		if (!IsValid(Selected) || !Selected->IsAlive() || !Simulation || !Simulation->IsAgentRegistered(Selected) ||
+			Simulation->GetAgentId(Selected) != SelectedDebugAgentId)
+		{
+			ClearSwarmDebugAgent();
+		}
+	}
+	if (!HasActiveSwarmDebug()) return;
 	if (!SwarmDebugPresenter) SwarmDebugPresenter.Reset(new FSwarmDebugPresenter());
 	if (!SwarmDebugOverlay)
 	{
@@ -641,6 +746,7 @@ void AFlyingSwarmCombatSimPlayerController::UpdateSwarmDebug(UWorld* World, ELev
 		DebugOutlineSource.Reset();
 	}
 	if (Camera) Camera->SetSwarmDebugBlendable(DebugOutlineMaterial);
-	SwarmDebugPresenter->Update(*this, *SwarmDebugOverlay, SwarmDebug, bSwarmCollision, bSwarmState,
-	                            bSwarmSpatial, bOutlineReady && DebugOutlineMaterial != nullptr, OutlineFailure);
+	SwarmDebugPresenter->Update(*this, *SwarmDebugOverlay, SwarmDebug, bSwarmCollision, bSwarmState, bSwarmSpatial,
+	                            bOutlineReady && DebugOutlineMaterial != nullptr, OutlineFailure,
+	                            SelectedDebugAgent.Get(), SelectedDebugAgentId);
 }

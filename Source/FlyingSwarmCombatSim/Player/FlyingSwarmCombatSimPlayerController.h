@@ -25,6 +25,7 @@ class FSwarmDebugPresenter;
 class USwarmDebugOverlayWidget;
 class UMaterialInstanceDynamic;
 class AFlyingSwarmCombatSimCameraManager;
+class AFlyingBoid;
 
 struct FSwarmDebugPresenterDeleter
 {
@@ -69,6 +70,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
 	TObjectPtr<UInputAction> ToggleSwarmSpatialDebugAction;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
+	TObjectPtr<UInputAction> SelectSwarmDebugAgentAction;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm Debug|Input")
+	TObjectPtr<UInputAction> ClearSwarmDebugAgentAction;
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -142,12 +149,16 @@ protected:
 	TObjectPtr<UInputMappingContext> SpectatorMappingContext;
 
 private:
+	bool HasActiveSwarmDebug() const;
 	void ToggleSwarmStateDebug();
 	void ToggleSwarmSpatialDebug();
 	void ToggleSwarmCollisionDebug();
+	void SelectSwarmDebugAgent();
+	void ClearSwarmDebugAgent();
 	void UpdateSwarmDebug(UWorld* World, ELevelTick TickType, float DeltaSeconds);
 	void StopSwarmDebug();
 	void DisableCollision();
+
 
 	UPROPERTY(Transient)
 	TObjectPtr<USwarmDebugOverlayWidget> SwarmDebugOverlay;
@@ -161,6 +172,8 @@ private:
 	bool bSwarmCollision = false;
 	bool bSwarmState = false;
 	bool bSwarmSpatial = false;
+	TWeakObjectPtr<AFlyingBoid> SelectedDebugAgent;
+	int32 SelectedDebugAgentId = INDEX_NONE;
 
 	AFlyingSwarmCombatSimGameMode* RunMode() const;
 	UGameplayHUDWidget* RunHUD() const;

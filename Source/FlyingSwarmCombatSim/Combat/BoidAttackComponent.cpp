@@ -33,8 +33,10 @@ FBoidDebugAttackState UBoidAttackComponent::GetDebugAttackState() const
 	const FBoidTargetFacts TargetFacts = Boid->GetTargetFacts();
 	AFlyingCharacter* Target = Cast<AFlyingCharacter>(TargetFacts.TargetActor.Get());
 	if (!TargetFacts.bDetected || !IsValid(Target) || !Target->IsAlive() || Boid->MovementTarget != Target) return State;
-	const bool bCadenceValid = CadenceTarget.Get() == Target && FMath::IsFinite(NextAttemptTime) && NextAttemptTime > 0.0;
+	const bool bCadenceValid = CadenceTarget.Get() == Target && FMath::IsFinite(NextAttemptTime) && NextAttemptTime > 0.0
+		&& FMath::IsFinite(ScheduledAttemptIntervalSeconds) && ScheduledAttemptIntervalSeconds > 0.f;
 	State.bHasCadence = bCadenceValid;
+	if (bCadenceValid) State.AttemptIntervalSeconds = ScheduledAttemptIntervalSeconds;
 	if (bCadenceValid)
 	{
 		const UWorld* World = GetWorld();
@@ -164,6 +166,7 @@ void UBoidAttackComponent::DeactivateCombatContext(uint64 OwnerToken)
 	SetComponentTickEnabled(false);
 	CadenceTarget.Reset();
 	NextAttemptTime = 0.0;
+	ScheduledAttemptIntervalSeconds = 0.f;
 	AttackFacts = FBoidAttackFacts();
 	AttackFacts.AssignedFanProbability = AssignedFanProbability;
 	AttackFacts.LastRejection = EBoidAttackRejection::ContextInactive;
@@ -173,6 +176,7 @@ void UBoidAttackComponent::ResetCadence(EBoidAttackRejection Reason)
 {
 	CadenceTarget.Reset();
 	NextAttemptTime = 0.0;
+	ScheduledAttemptIntervalSeconds = 0.f;
 	AttackFacts.bCommonEligible = false;
 	AttackFacts.bNormalEligible = false;
 	AttackFacts.bApproachEligible = false;
@@ -256,7 +260,8 @@ void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 	{
 		ResetCadence(EBoidAttackRejection::NotDue);
 		CadenceTarget = Target;
-		NextAttemptTime = Now + BoidAttack::AttemptDelay(AttackRandom, SnapshottedInterval, SnapshottedCadenceJitter, true);
+		ScheduledAttemptIntervalSeconds = BoidAttack::AttemptDelay(AttackRandom, SnapshottedInterval, SnapshottedCadenceJitter, true);
+		NextAttemptTime = Now + ScheduledAttemptIntervalSeconds;
 	}
 	if (!bConfigurationValid || !TargetFacts.bHasSight) AttackFacts.bCommonEligible = false;
 	const FVector TargetCenter = Target->GetActorLocation();
@@ -283,6 +288,7 @@ void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 	}
 	// A failed opportunity is discarded. A hitch can never accumulate extra shots.
 	const float Delay = BoidAttack::AttemptDelay(AttackRandom, SnapshottedInterval, SnapshottedCadenceJitter, false);
+	ScheduledAttemptIntervalSeconds = Delay;
 	NextAttemptTime = Now + Delay;
 	AttackFacts.bAttemptDue = true;
 	AttackFacts.SecondsUntilAttempt = Delay;

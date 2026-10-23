@@ -2,14 +2,35 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Swarm/Debug/SwarmDebugSettings.h"
 #include "SwarmDebugOverlayWidget.generated.h"
 
 struct FSwarmDebugBadge
 {
 	FVector2D Position = FVector2D::ZeroVector;
-	float Scale = 1.0f;
+	float DistanceAlpha = 0.f;
 	FString Text;
+	FString Reason;
 	FLinearColor Color = FLinearColor::White;
+	float HealthFraction = 1.f;
+	bool bHasCadence = false;
+	float AttackFraction = 0.f;
+	float SecondsUntilAttempt = 0.f;
+};
+
+struct FSwarmDebugLabel
+{
+	FVector2D Position = FVector2D::ZeroVector;
+	FString Text;
+};
+
+struct FSwarmDebugInspectorView
+{
+	int32 AgentId = INDEX_NONE;
+	TArray<FString> Lines;
+	bool bHasScreenBounds = false;
+	FVector2D ScreenMinimum = FVector2D::ZeroVector;
+	FVector2D ScreenMaximum = FVector2D::ZeroVector;
 };
 
 UCLASS()
@@ -20,8 +41,8 @@ class FLYINGSWARMCOMBATSIM_API USwarmDebugOverlayWidget : public UUserWidget
 public:
 	USwarmDebugOverlayWidget(const FObjectInitializer& ObjectInitializer);
 
-	void SetFrame(TArray<FSwarmDebugBadge>&& InBadges, const FString& InLegend, int32 InFontSize,
-	              const FLinearColor& InBackground);
+	void SetFrame(TArray<FSwarmDebugBadge>&& InBadges, TArray<FSwarmDebugLabel>&& InLabels,
+	              const FString& InLegend, const FSwarmDebugSettings& InSettings, const FSwarmDebugInspectorView& InInspector);
 	void ClearFrame();
 
 protected:
@@ -31,7 +52,8 @@ protected:
 
 private:
 	TArray<FSwarmDebugBadge> Badges;
+	TArray<FSwarmDebugLabel> Labels;
 	FString Legend;
-	FLinearColor Background = FLinearColor(0.015f, 0.02f, 0.03f, 0.25f);
-	int32 FontSize = 12;
+	FSwarmDebugSettings Settings;
+	FSwarmDebugInspectorView Inspector;
 };
