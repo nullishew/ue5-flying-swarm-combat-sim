@@ -39,6 +39,9 @@ namespace
 		FVector TargetPosition = FVector::ZeroVector;
 		TWeakObjectPtr<AActor> TargetActor;
 		FBoidMovementIntent MovementIntent;
+		uint64 IntentOwner = 0;
+		uint64 TransitMemoryRevision = 0;
+		bool bBoundsCorrected = false;
 		FVector Goal = FVector::ZeroVector;
 		bool bHasGoal = false;
 		bool bDestinationBlocked = false;
@@ -597,6 +600,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			{
 				continue;
 			}
+			const FVector UnconstrainedPosition = Boid->GetActorLocation();
 			if (Boid->IsSteeringActive())
 			{
 				Boid->ConstrainWanderToBounds(WanderBounds, Tuning.BoundsMarginCm);
@@ -613,6 +617,9 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			Snapshot.Id = Agent.Id;
 			Snapshot.bSteeringActive = Boid->IsSteeringActive();
 			Snapshot.MovementIntent = Boid->GetMovementIntent();
+			Snapshot.IntentOwner = Boid->GetMovementIntentOwner();
+			Snapshot.TransitMemoryRevision = Snapshot.MovementIntent.bIsTransit ? GetTransitGoalRevision(Boid) : 0;
+			Snapshot.bBoundsCorrected = !Snapshot.Position.Equals(UnconstrainedPosition, .001f);
 			Snapshot.Goal = Snapshot.MovementIntent.Goal;
 			Snapshot.bHasGoal = Snapshot.MovementIntent.bHasGoal;
 			if (IsValid(Boid->MovementTarget))
@@ -677,10 +684,10 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		};
 		if (Snapshot.MovementIntent.Policy == EBoidMovementPolicy::LocationArrival)
 		{
-			// Authored route sweeps are owned by the frame-budgeted service. Local
-			// obstacle probes and collision-checked movement still protect each step.
+			// Transit and authored route sweeps are owned by the frame-budgeted service. Local
+			// Transit can seek a blocked destination; obstacle probes and swept movement protect each step.
 			Snapshot.bDestinationBlocked = !Snapshot.bHasGoal
-				|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes && Snapshot.bPlannerControlled
+				|| ((Snapshot.MovementIntent.bIsTransit || NavigationMode == EBoidNavigationMode::AuthoredRoutes) && Snapshot.bPlannerControlled
 					    ? !IsAllowedFlightSegment(Snapshot.Position, Snapshot.Goal,
 					                              Snapshot.Radius + FMath::Max(0.f, Tuning.ObstacleMarginCm))
 					    : !IsDirectGoalClear(Snapshot.Goal));
@@ -1122,7 +1129,10 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		                                    FMath::Max(0.0f, Boid->MaxSpeedCmPerSec));
 		FSwarmMovementCommitObservation Commit;
 		const bool bObserve = DebugMovementSamples.Contains(Snapshots[Index].Id);
-		Boid->ApplyWanderAcceleration(Outputs[Index].Acceleration, StepTime, SpeedLimit, WanderBounds, Tuning.BoundsMarginCm, Tuning.VisualTurnSpeed, bObserve ? &Commit : nullptr);
+		const bool bTrackTransit = Snapshots[Index].MovementIntent.bIsTransit && Snapshots[Index].MovementIntent.Policy == EBoidMovementPolicy::LocationArrival;
+		const FVector MovementStart = Boid->GetActorLocation();
+		bool bUnobstructedMove = false;
+		Boid->ApplyWanderAcceleration(Outputs[Index].Acceleration, StepTime, SpeedLimit, WanderBounds, Tuning.BoundsMarginCm, Tuning.VisualTurnSpeed, bObserve ? &Commit : nullptr, bTrackTransit ? &bUnobstructedMove : nullptr);
 		if (bObserve)
 		{
 			if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Snapshots[Index].Id))
@@ -1135,6 +1145,10 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			|| !IsAgentRegistered(Boid) || !CanSimulate())
 		{
 			continue; // A swept-movement callback may have killed or removed the actor.
+		}
+		if (bTrackTransit)
+		{
+			RecordTransitArrival(Boid, Snapshots[Index].IntentOwner, Snapshots[Index].MovementIntent.Revision, Snapshots[Index].TransitMemoryRevision, MovementStart, bUnobstructedMove && !Snapshots[Index].bBoundsCorrected);
 		}
 		Boid->PublishMovementConstraint(Outputs[Index].Constraint, Boid->GetFlightVelocity().Size(),
 		                                StaticEnum<EBoidCombatMovementConstraint>()->GetNameStringByValue(

@@ -15,7 +15,7 @@ struct FBoidLocationGoalTaskInstanceData
 	UPROPERTY(EditAnywhere, Category = "Goal")
 	FVector Goal = FVector::ZeroVector;
 
-	UPROPERTY(EditAnywhere, Category="Goal")
+	UPROPERTY(EditAnywhere, Category = "Goal")
 	bool bUseLastKnownTransitGoal = false;
 
 	UPROPERTY(EditAnywhere, Category = "Goal", meta = (ClampMin = "0.0", Units = "cm"))
@@ -29,6 +29,9 @@ struct FBoidLocationGoalTaskInstanceData
 
 	UPROPERTY(Transient)
 	uint64 IntentToken = 0;
+
+	UPROPERTY(Transient)
+	uint64 TransitGoalRevision = 0;
 
 	UPROPERTY(Transient)
 	uint64 PreviousIntentOwner = 0;
@@ -46,7 +49,7 @@ struct FBoidLocationGoalTaskInstanceData
 	bool bHasAppliedIntent = false;
 };
 
-/** Selects a world-space arrival goal; the runner validates the segment and applies movement. */
+// Selects an arrival goal, or a remembered-goal fly-through that succeeds when the runner records arrival.
 USTRUCT(meta = (DisplayName = "Follow Location Goal", Category = "Boid"))
 struct FBoidLocationGoalStateTreeTask : public FStateTreeTaskCommonBase
 {

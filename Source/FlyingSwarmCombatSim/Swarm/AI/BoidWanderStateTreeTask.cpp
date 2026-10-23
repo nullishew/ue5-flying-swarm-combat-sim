@@ -21,6 +21,7 @@ EStateTreeRunStatus FBoidWanderStateTreeTask::EnterState(FStateTreeExecutionCont
 	FBoidMovementIntent CruiseIntent = InstanceData.PreviousIntent;
 	CruiseIntent.Policy = EBoidMovementPolicy::Cruise;
 	CruiseIntent.bHasGoal = false;
+	CruiseIntent.bIsTransit = false;
 	CruiseIntent.Goal = FVector::ZeroVector;
 	if (CruiseIntent.Policy != InstanceData.PreviousIntent.Policy
 		|| InstanceData.PreviousIntent.bHasGoal

@@ -34,6 +34,7 @@ EStateTreeRunStatus FBoidLocationGoalStateTreeTask::EnterState(FStateTreeExecuti
 	AFlyingBoid* Boid = Cast<AFlyingBoid>(Context.GetOwner());
 	FBoidLocationGoalTaskInstanceData& InstanceData = Context.GetInstanceData(*this);
 	InstanceData.bHasAppliedIntent = false;
+	InstanceData.TransitGoalRevision = 0;
 	USwarmSimulationSubsystem* Runner = IsValid(Boid) ? Boid->GetSimulationSubsystem() : nullptr;
 	UBoidSteeringProfile* EffectiveProfile = IsValid(Runner)
 		? Runner->ResolveSteeringProfile(Boid, InstanceData.SteeringProfile)
@@ -44,7 +45,11 @@ EStateTreeRunStatus FBoidLocationGoalStateTreeTask::EnterState(FStateTreeExecuti
 		return EStateTreeRunStatus::Failed;
 	}
 
-	if (InstanceData.bUseLastKnownTransitGoal && !Boid->GetNavigationFacts().bHasTransitGoal) return EStateTreeRunStatus::Failed;
+	if (InstanceData.bUseLastKnownTransitGoal)
+	{
+		InstanceData.TransitGoalRevision = IsValid(Runner) ? Runner->GetTransitGoalRevision(Boid) : 0;
+		if (InstanceData.TransitGoalRevision == 0 || !Boid->GetNavigationFacts().bHasTransitGoal) return EStateTreeRunStatus::Failed;
+	}
 	InstanceData.PreviousIntent = Boid->GetMovementIntent();
 	InstanceData.PreviousIntentOwner = Boid->GetMovementIntentOwner();
 	InstanceData.IntentToken = Boid->AcquireIntentToken();
@@ -64,12 +69,17 @@ EStateTreeRunStatus FBoidLocationGoalStateTreeTask::EnterState(FStateTreeExecuti
 	return EStateTreeRunStatus::Running;
 }
 
-EStateTreeRunStatus FBoidLocationGoalStateTreeTask::Tick(FStateTreeExecutionContext& Context,const float DeltaTime) const
+EStateTreeRunStatus FBoidLocationGoalStateTreeTask::Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
-	const auto& Data=Context.GetInstanceData(*this);
-	const AFlyingBoid* Boid=Cast<AFlyingBoid>(Context.GetOwner());
-	return IsValid(Boid)&&Boid->IsAlive()&&Boid->GetMovementIntentOwner()==Data.IntentToken
-		&&(!Data.bUseLastKnownTransitGoal||Boid->GetNavigationFacts().bHasTransitGoal)?EStateTreeRunStatus::Running:EStateTreeRunStatus::Failed;
+	const FBoidLocationGoalTaskInstanceData& Data = Context.GetInstanceData(*this);
+	AFlyingBoid* Boid = Cast<AFlyingBoid>(Context.GetOwner());
+	if (!IsValid(Boid) || !Boid->IsAlive() || !Data.bHasAppliedIntent || Boid->GetMovementIntentOwner() != Data.IntentToken) return EStateTreeRunStatus::Failed;
+	if (!Data.bUseLastKnownTransitGoal) return EStateTreeRunStatus::Running;
+	USwarmSimulationSubsystem* Runner = Boid->GetSimulationSubsystem();
+	if (!IsValid(Runner)) return EStateTreeRunStatus::Failed;
+	if (Runner->TryCompleteTransitGoal(Boid, Data.IntentToken, Data.TransitGoalRevision)) return EStateTreeRunStatus::Succeeded;
+	if (Runner->GetTransitGoalRevision(Boid) != Data.TransitGoalRevision || !Boid->GetNavigationFacts().bHasTransitGoal) return EStateTreeRunStatus::Failed;
+	return EStateTreeRunStatus::Running;
 }
 
 void FBoidLocationGoalStateTreeTask::ExitState(FStateTreeExecutionContext& Context,
@@ -86,10 +96,13 @@ void FBoidLocationGoalStateTreeTask::ExitState(FStateTreeExecutionContext& Conte
 	{
 		return;
 	}
-	if (Boid->GetMovementIntentOwner() == InstanceData.IntentToken)
+	// A newer owner may deliberately use the same profile; profile equality alone is not ownership.
+	if (Boid->GetMovementIntentOwner() != InstanceData.IntentToken)
 	{
-		Boid->SetMovementIntent(InstanceData.PreviousIntent, InstanceData.PreviousIntentOwner);
+		InstanceData.bHasAppliedIntent = false;
+		return;
 	}
+	Boid->SetMovementIntent(InstanceData.PreviousIntent, InstanceData.PreviousIntentOwner);
 	if (Boid->GetSteeringProfile() == InstanceData.AppliedProfile)
 	{
 		if (InstanceData.bWasSteeringActive && InstanceData.PreviousProfile)
