@@ -178,6 +178,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
 	TObjectPtr<USoundAttenuation> HitAttenuation;
 
+	// Played once per successfully launched volley at the muzzle.
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
+	TObjectPtr<USoundBase> FireSound;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio", meta = (ClampMin = "0", ClampMax = "2"))
+	float FireVolume = 0.7f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat Feedback|Audio")
+	TObjectPtr<USoundAttenuation> FireAttenuation;
+
 	UPROPERTY(BlueprintAssignable, Category = "Boid|Health")
 	FBoidHealthChangedDelegate OnHealthChanged;
 	UPROPERTY(BlueprintAssignable, Category = "Boid|Health")

@@ -8,6 +8,8 @@
 #include "Components/SphereComponent.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 #include "GameFramework/Actor.h"
 #include "Player/FlyingCharacter.h"
 #include "Swarm/BoidIntentTypes.h"
@@ -367,6 +369,7 @@ void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 	SpawnParams.Owner = Boid;
 	SpawnParams.Instigator = Boid->GetInstigator();
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	bool bPlayedFireSound = false;
 	for (const FVector& Direction : Directions)
 	{
 		if (!CanContinue()) return;
@@ -405,6 +408,14 @@ void UBoidAttackComponent::OnSimulationFrame(float DeltaTime)
 			if (IsValid(Projectile)) Projectile->Destroy();
 			AttackFacts.LastRejection = EBoidAttackRejection::SpawnFailed;
 			continue;
+		}
+		if (!bPlayedFireSound)
+		{
+			bPlayedFireSound = true;
+			if (IsValid(Boid) && GetNetMode() != NM_DedicatedServer && Boid->FireSound)
+			{
+				UGameplayStatics::PlaySoundAtLocation(this, Boid->FireSound, MuzzleLocation, Boid->FireVolume, 1.0f, 0.0f, Boid->FireAttenuation);
+			}
 		}
 		// Launch presentation can kill the shooter or stop its StateTree.
 		if (!CanContinue()) return;
