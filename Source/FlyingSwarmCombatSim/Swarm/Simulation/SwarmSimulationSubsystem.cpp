@@ -238,6 +238,8 @@ void USwarmSimulationSubsystem::FinishShutdown()
 	if (bShutdownComplete) return;
 	bShutdownComplete = true;
 	CollisionQueries.Reset();
+	DebugObservers.Reset();
+	DebugMovementSamples.Reset();
 	// Stop logic while associations still identify this runner. Task exits cannot
 	// reactivate a dead boid, and no queued request can restart a shutting-down runner.
 	for (const FRegisteredAgent& Agent : Agents)
@@ -319,6 +321,28 @@ int32 USwarmSimulationSubsystem::GetAgentId(const AFlyingBoid* Boid) const
 	if (!IsValid(Boid)) return INDEX_NONE;
 	const int32* Id = AgentIds.Find(TWeakObjectPtr<AFlyingBoid>(const_cast<AFlyingBoid*>(Boid)));
 	return Id ? *Id : INDEX_NONE;
+}
+
+void USwarmSimulationSubsystem::GetDebugAgents(TArray<FSwarmDebugAgent>& OutAgents) const
+{
+	OutAgents.Reset(Agents.Num());
+	for (const FRegisteredAgent& Agent : Agents)
+	{
+		AFlyingBoid* Boid = Agent.Boid.Get();
+		if (!IsValid(Boid) || !Boid->IsAlive() || Boid->GetWorld() != GetWorld() || !IsAgentRegistered(Boid)) continue;
+		OutAgents.Add({Agent.Id, Agent.Boid});
+	}
+	OutAgents.Sort([](const FSwarmDebugAgent& A, const FSwarmDebugAgent& B) { return A.Id < B.Id; });
+}
+
+void USwarmSimulationSubsystem::AcquireDebugPresentation()
+{
+	if (DebugPresentationUsers < MAX_int32) ++DebugPresentationUsers;
+}
+
+void USwarmSimulationSubsystem::ReleaseDebugPresentation()
+{
+	DebugPresentationUsers = FMath::Max(0, DebugPresentationUsers - 1);
 }
 
 void USwarmSimulationSubsystem::RebuildAgentLookups()
@@ -460,6 +484,7 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	if (bFrameActive || bEndingPlay) return;
+	PruneDebugObservations();
 	LastFrameNeighborCellsVisited = LastFrameNeighborSamplesExamined = LastFrameNeighborPairChecks = 0;
 	LastFrameNeighborWallTraces = LastFrameAcceptedNeighbors = LastFrameMovementSubsteps = 0;
 	LastFrameProjectileLaunches = LastFrameVisibilityQueryRebuilds = 0;
@@ -526,7 +551,7 @@ void USwarmSimulationSubsystem::Tick(float DeltaTime)
 	CombatCoordinator->ValidateReadinessAfterMovement(*this, ReadinessAgents,
 	                                                  FMath::Min(DeltaTime, FMath::Max(.001f, Tuning.MaxFrameSeconds)));
 	AFlyingBoid* Selected = IsValid(DebugBoid) ? DebugBoid.Get() : TestBoid.Get();
-	if (bDrawPositioning && IsValid(Selected) && Selected->IsAlive())
+	if (bDrawPositioning && !IsDebugPresentationSuppressed() && IsValid(Selected) && Selected->IsAlive())
 	{
 		const FBoidCombatMovementFacts Facts = Selected->GetCombatMovementFacts();
 		const auto PhaseName = [](EBoidNavigationPhase Phase)
@@ -559,6 +584,8 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	if (!CanSimulate()) return;
 	ApplyQueuedRegistrations();
 	++LastFrameMovementSubsteps;
+	BeginDebugMovementStep(StepTime);
+	ON_SCOPE_EXIT { FinishDebugMovementStep(); };
 	TArray<FBoidSnapshot> Snapshots;
 	Snapshots.Reserve(Agents.Num());
 	{
@@ -579,6 +606,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 			FBoidSnapshot& Snapshot = Snapshots.AddDefaulted_GetRef();
 			Snapshot.Boid = Boid;
 			Snapshot.Position = Boid->GetActorLocation();
+			if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Agent.Id)) Debug->BoundsCorrection = Snapshot.Position - Debug->StartPosition;
 			Snapshot.Velocity = Boid->GetFlightVelocity();
 			Snapshot.Heading = Boid->GetFlightHeading();
 			Snapshot.Radius = Boid->CollisionSphere->GetScaledSphereRadius();
@@ -614,6 +642,15 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 				Snapshot.NavigationPhase = Navigation.Phase;
 				Snapshot.OrbitContext = Navigation.OrbitContext;
 				Snapshot.DesiredSpeed = Navigation.DesiredSpeed;
+			}
+			if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Agent.Id))
+			{
+				Debug->bHasResolvedPolicy = true;
+				Debug->ResolvedPolicy = Snapshot.MovementIntent.Policy;
+				Debug->bHasGoal = Snapshot.bHasGoal;
+				Debug->GoalDistance = Snapshot.bHasGoal ? FVector::Distance(Snapshot.Position, Snapshot.Goal) : 0.f;
+				Debug->ArrivalRadius = Snapshot.MovementIntent.ArrivalRadiusCm;
+				Debug->Stage = Snapshot.bSteeringActive ? TEXT("AWAITING COMMIT") : TEXT("STEERING DISABLED");
 			}
 		}
 	}
@@ -735,6 +772,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		AFlyingBoid* Boid = Self.Boid.Get();
 		Output.bSteeringActive = true;
 		UBoidSteeringProfile* Profile = ResolveSteeringProfile(Boid);
+		if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Self.Id)) Debug->EffectiveProfile = GetNameSafe(Profile);
 		Boid->PrepareSteeringRuntime(Profile);
 		if (Profile)
 		{
@@ -1064,6 +1102,17 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(SwarmMovementCommit);
 		AFlyingBoid* Boid = Snapshots[Index].Boid.Get();
+		if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Snapshots[Index].Id))
+		{
+			Debug->RequestedSpeed = Outputs[Index].TargetSpeed;
+			Debug->Acceleration = Outputs[Index].Acceleration;
+			Debug->SteeringHeading = Outputs[Index].Heading;
+			Debug->bHasGoal = Snapshots[Index].bHasGoal;
+			Debug->GoalDistance = Snapshots[Index].bHasGoal ? FVector::Distance(Snapshots[Index].Position, Snapshots[Index].Goal) : 0.f;
+			Debug->Constraint = Outputs[Index].Constraint;
+			Debug->bIntentionalStop = Outputs[Index].bIntentionalStop;
+			Debug->Stage = Outputs[Index].bSteeringActive ? TEXT("COMMIT SKIPPED") : TEXT("STEERING DISABLED");
+		}
 		if (!IsValid(Boid) || !Boid->IsAlive() || !Boid->IsSteeringActive()
 			|| !IsAgentRegistered(Boid) || !CanSimulate() || !Outputs[Index].bSteeringActive)
 		{
@@ -1071,8 +1120,17 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 		}
 		const float SpeedLimit = FMath::Min(FMath::Max(0.0f, Tuning.CruiseSpeedCmPerSec),
 		                                    FMath::Max(0.0f, Boid->MaxSpeedCmPerSec));
-		Boid->ApplyWanderAcceleration(Outputs[Index].Acceleration, StepTime, SpeedLimit,
-		                              WanderBounds, Tuning.BoundsMarginCm, Tuning.VisualTurnSpeed);
+		FSwarmMovementCommitObservation Commit;
+		const bool bObserve = DebugMovementSamples.Contains(Snapshots[Index].Id);
+		Boid->ApplyWanderAcceleration(Outputs[Index].Acceleration, StepTime, SpeedLimit, WanderBounds, Tuning.BoundsMarginCm, Tuning.VisualTurnSpeed, bObserve ? &Commit : nullptr);
+		if (bObserve)
+		{
+			if (FSwarmMovementDebugSnapshot* Debug = DebugMovementSamples.Find(Snapshots[Index].Id))
+			{
+				Debug->Commit = MoveTemp(Commit);
+				Debug->Stage = TEXT("COMMIT EXECUTED");
+			}
+		}
 		if (!IsValid(Boid) || !Boid->IsAlive() || !Boid->IsSteeringActive()
 			|| !IsAgentRegistered(Boid) || !CanSimulate())
 		{
@@ -1177,7 +1235,7 @@ void USwarmSimulationSubsystem::AdvanceStep(float StepTime)
 				RecoveryCount = Current->RecoveryCount;
 			}
 		}
-		if (bDrawSteering && Boid == Selected)
+		if (bDrawSteering && !IsDebugPresentationSuppressed() && Boid == Selected)
 		{
 			const FVector Position = Snapshots[Index].Position;
 			DrawDirection(GetWorld(), Position, Outputs[Index].ProfileIntent, 180.0f, FColor::Blue);

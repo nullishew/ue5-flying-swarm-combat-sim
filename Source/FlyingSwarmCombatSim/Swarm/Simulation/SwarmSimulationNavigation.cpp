@@ -52,6 +52,77 @@ FBoidNavigationGoal USwarmSimulationSubsystem::GetNavigationGoal(AFlyingBoid* Bo
 	return FBoidNavigationGoal();
 }
 
+bool USwarmSimulationSubsystem::GetDebugMovementView(const AFlyingBoid* Boid, FBoidNavigationGoal& OutGoal, TArray<FVector>& OutRemainingRoute) const
+{
+	OutGoal = FBoidNavigationGoal();
+	OutRemainingRoute.Reset();
+	if (!IsValid(Boid) || !Boid->IsAlive() || Boid->GetWorld() != GetWorld() || !IsAgentRegistered(Boid)) return false;
+
+	const FBoidMovementIntent Intent = Boid->GetMovementIntent();
+	const int32 AgentId = GetAgentId(Boid);
+	const int32* AgentIndex = AgentRecordIndices.Find(AgentId);
+	const FRegisteredAgent* Agent = AgentIndex && Agents.IsValidIndex(*AgentIndex) && Agents[*AgentIndex].Id == AgentId
+		? &Agents[*AgentIndex] : nullptr;
+	const FNavigationAgentState* State = NavigationAgents.Find(AgentId);
+	const bool bUsesNavigation = Intent.Policy == EBoidMovementPolicy::RangedOrbit || Intent.bIsTransit
+		|| (NavigationMode == EBoidNavigationMode::AuthoredRoutes
+			&& (Intent.Policy == EBoidMovementPolicy::FollowStandOff
+				|| Intent.Policy == EBoidMovementPolicy::LocationArrival));
+	const bool bCurrentState = State && State->IntentRevision == Intent.Revision
+		&& State->IntentOwner == Boid->GetMovementIntentOwner() && State->RouteTarget.Get() == Boid->MovementTarget
+		&& State->Mode == NavigationMode
+		&& (NavigationMode == EBoidNavigationMode::DirectOnly || (RouteService && State->RouteGeneration == RouteService->GetGeneration()));
+
+	if (bUsesNavigation)
+	{
+		if (bCurrentState) OutGoal = State->Navigation;
+		else if (State && CombatCoordinator && Intent.Policy == EBoidMovementPolicy::RangedOrbit)
+		{
+			// Local combat goals deliberately preserve the underlying route identity. Compare
+			// the two existing published outputs rather than requiring that old route to match.
+			const FBoidNavigationGoal Local = CombatCoordinator->GetNavigation(AgentId, Boid->MovementTarget);
+			const bool bLocalPhase = Local.Phase == EBoidNavigationPhase::Orbit || Local.Phase == EBoidNavigationPhase::Retreat;
+			if (bLocalPhase && Local.bHasGoal && !Local.bHoldPosition && State->Navigation.bHasGoal && !State->Navigation.bHoldPosition
+				&& State->Navigation.Phase == Local.Phase && State->Navigation.Goal.Equals(Local.Goal, 1.f)) OutGoal = State->Navigation;
+		}
+	}
+	else
+	{
+		OutGoal.Goal = Intent.Goal;
+		OutGoal.bHasGoal = Intent.bHasGoal;
+		OutGoal.bPreferNavigationGoal = false;
+	}
+
+	const AActor* Target = Boid->MovementTarget;
+	const AFlyingBoid* TargetBoid = Cast<AFlyingBoid>(Target);
+	const AFlyingCharacter* TargetPlayer = Cast<AFlyingCharacter>(Target);
+	const bool bTargetLiving = IsValid(Target) && (!TargetBoid || TargetBoid->IsAlive())
+		&& (!TargetPlayer || TargetPlayer->IsAlive());
+	if (Agent && Agent->bRetreating && Intent.Policy == EBoidMovementPolicy::FollowStandOff && bTargetLiving
+		&& Agent->RetreatTarget.Get() == Target)
+	{
+		OutGoal.Goal = Agent->RetreatGoal;
+		OutGoal.bHasGoal = true;
+		OutGoal.bHoldPosition = false;
+		OutGoal.bPreferNavigationGoal = true;
+		OutGoal.Phase = EBoidNavigationPhase::Retreat;
+	}
+
+	if (!bUsesNavigation || !bCurrentState || State->Status != EBoidRouteStatus::Ready || State->WaypointIndex < 0
+		|| !State->Waypoints.IsValidIndex(State->WaypointIndex)) return true;
+	if (OutGoal.bHoldPosition || !OutGoal.bHasGoal || OutGoal.Goal.ContainsNaN() || !OutGoal.Goal.Equals(State->Waypoints[State->WaypointIndex], 1.f)) return true;
+	for (int32 Index = State->WaypointIndex; Index < State->Waypoints.Num(); ++Index)
+	{
+		if (State->Waypoints[Index].ContainsNaN())
+		{
+			OutRemainingRoute.Reset();
+			return true;
+		}
+		OutRemainingRoute.Add(State->Waypoints[Index]);
+	}
+	return true;
+}
+
 void USwarmSimulationSubsystem::AdoptNavigationRoute(int32 AgentId, const FVector& Goal,
                                                      const FBoidFlightRouteResult& Route)
 {
@@ -335,7 +406,7 @@ void USwarmSimulationSubsystem::UpdateNavigationGoals(float DeltaTime)
 		Facts.LengthCm = N.LengthCm;
 		Facts.FailureReason = N.FailureReason;
 		Boid->PublishNavigation(Facts);
-		if (bDrawNavigation)
+		if (bDrawNavigation && !IsDebugPresentationSuppressed())
 		{
 			DrawDebugLine(GetWorld(), Boid->GetActorLocation(), Wanted.Goal,
 			              Wanted.bHasGoal ? FColor::Green : FColor::Red, false, 0, 0, 2);

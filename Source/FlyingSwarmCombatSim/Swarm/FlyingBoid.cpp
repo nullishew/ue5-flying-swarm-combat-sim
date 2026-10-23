@@ -1,4 +1,5 @@
 #include "Swarm/FlyingBoid.h"
+#include "Swarm/Debug/SwarmMovementDebug.h"
 #include "Combat/BoidAttackComponent.h"
 #include "Sound/SoundBase.h"
 #include "StateTreeReference.h"
@@ -575,10 +576,12 @@ namespace
 }
 
 void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, float DeltaTime,
-	float CruiseSpeed, const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed)
+	float CruiseSpeed, const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed, FSwarmMovementCommitObservation* Observation)
 {
+	if (Observation) *Observation = FSwarmMovementCommitObservation();
 	if (bDead || DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
 	{
+		if (Observation) Observation->Result = ESwarmMovementCommitResult::InvalidStep;
 		return;
 	}
 	FlightMovement->ConfigureBounds(Bounds, CollisionSphere->GetScaledSphereRadius(), BoundsMarginCm);
@@ -586,11 +589,18 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	FVector Extent;
 	if (!BoidFlight::SafeBounds(Bounds, CollisionSphere->GetScaledSphereRadius(), BoundsMarginCm, Transform, Extent))
 	{
+		if (Observation) Observation->Result = ESwarmMovementCommitResult::InvalidBounds;
 		return;
 	}
 	Velocity = (Velocity + DesiredAcceleration * DeltaTime).GetClampedToMaxSize(FMath::Max(0.0f, CruiseSpeed));
 	const FVector Start = GetActorLocation();
 	const FVector Delta = BoidFlight::ClampPosition(Start + Velocity * DeltaTime, Transform, Extent) - Start;
+	if (Observation)
+	{
+		Observation->RequestedDelta = Velocity * DeltaTime;
+		Observation->ClampedDelta = Delta;
+		Observation->bBoundsClamped = !Delta.Equals(Observation->RequestedDelta, .001f);
+	}
 	// Authored flight space constrains actual movement as well as route planning.
 	USwarmSimulationSubsystem* Simulation = GetSimulationSubsystem();
 	const bool bAuthoredSpace = IsValid(Simulation) && Simulation->NavigationMode == EBoidNavigationMode::AuthoredRoutes;
@@ -598,12 +608,23 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 		CollisionSphere->GetScaledSphereRadius() + FMath::Max(0.f, Simulation->Tuning.ObstacleMarginCm)))
 	{
 		Velocity = FVector::ZeroVector;
+		if (Observation) Observation->Result = ESwarmMovementCommitResult::FlightSpaceRejected;
 		return;
 	}
 	FHitResult Hit;
-	FlightMovement->SafeMoveUpdatedComponent(Delta, GetActorQuat(), true, Hit);
+	const bool bMoveReturned = FlightMovement->SafeMoveUpdatedComponent(Delta, GetActorQuat(), true, Hit);
+	if (Observation)
+	{
+		Observation->bMoveReturned = bMoveReturned;
+		Observation->bBlockingHit = Hit.bBlockingHit;
+		Observation->bStartedPenetrating = Hit.bStartPenetrating;
+		Observation->HitNormal = Hit.Normal;
+		Observation->HitComponent = GetNameSafe(Hit.GetComponent());
+		Observation->Result = Hit.bStartPenetrating ? ESwarmMovementCommitResult::StartedPenetrating : (Hit.bBlockingHit ? ESwarmMovementCommitResult::SweepBlocked : ESwarmMovementCommitResult::Completed);
+	}
 	if (bDead)
 	{
+		if (Observation) Observation->Result = ESwarmMovementCommitResult::Interrupted;
 		return;
 	}
 	// A slide can generate additional segments; authored routes stop at contact
@@ -611,9 +632,16 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	if (Hit.bBlockingHit && !bAuthoredSpace)
 	{
 		FlightMovement->SlideAlongSurface(Delta, 1.0f - Hit.Time, Hit.Normal, Hit);
+		if (Observation && Hit.bBlockingHit)
+		{
+			Observation->HitNormal = Hit.Normal;
+			Observation->HitComponent = GetNameSafe(Hit.GetComponent());
+			Observation->bStartedPenetrating |= Hit.bStartPenetrating;
+		}
 	}
 	if (bDead)
 	{
+		if (Observation) Observation->Result = ESwarmMovementCommitResult::Interrupted;
 		return;
 	}
 	// Depenetration can reposition the sphere; it must not create unbounded velocity.

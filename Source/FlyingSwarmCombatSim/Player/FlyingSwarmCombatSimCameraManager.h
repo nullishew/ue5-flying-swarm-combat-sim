@@ -14,17 +14,21 @@ UCLASS()
 class AFlyingSwarmCombatSimCameraManager : public APlayerCameraManager
 {
 	GENERATED_BODY()
-	
+
 public:
 
 	/** Constructor */
 	AFlyingSwarmCombatSimCameraManager();
 	void PlayHitShake(float Degrees, float Duration);
+	void SetSwarmDebugBlendable(class UMaterialInterface* Material);
 
 protected:
 	virtual void ApplyCameraModifiers(float DeltaTime, FMinimalViewInfo& InOutPOV) override;
 
 private:
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> SwarmDebugBlendable;
+
 	float HitShakeAge = 0.0f;
 	float HitShakeDegrees = 0.0f;
 	float HitShakeDuration = 0.18f;

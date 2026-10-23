@@ -8,8 +8,17 @@
 
 class AFlyingBoidAttackProjectile;
 class USceneComponent;
+class USphereComponent;
 class USwarmSimulationSubsystem;
 struct FCollisionQueryParams;
+
+struct FBoidDebugAttackState
+{
+	bool bHasCadence = false;
+	bool bCanEngage = false;
+	float SecondsUntilAttempt = 0.f;
+	float AttemptIntervalSeconds = 0.f;
+};
 
 /** Fires while enabled by the Combat StateTree task and ranged movement is active; never moves the boid or completes a StateTree state. */
 UCLASS(ClassGroup=(Boid), meta=(BlueprintSpawnableComponent))
@@ -46,6 +55,7 @@ public:
 	uint64 GetCombatContextOwner() const { return ContextOwnerToken; }
 	void DeactivateCombatContext(uint64 OwnerToken);
 	const FBoidAttackFacts& GetAttackFacts() const { return AttackFacts; }
+	FBoidDebugAttackState GetDebugAttackState() const;
 	void SuspendSimulation();
 
 #if WITH_EDITOR
@@ -76,7 +86,6 @@ private:
 	float SnapshottedApproachDistance = 2000.f;
 	float SnapshottedCloseDistance = 100.f;
 	float SnapshottedClearance = 30.f;
-	float SnapshottedProjectileRadius = 0.f;
 	float SnapshottedProjectileSpeed = 0.f;
 	float SnapshottedProjectileDamage = 0.f;
 	float SnapshottedProjectileLifespan = 0.f;
@@ -88,12 +97,13 @@ private:
 	TWeakObjectPtr<USwarmSimulationSubsystem> SimulationSubscription;
 	FDelegateHandle SimulationHandle;
 	double NextAttemptTime = 0.0;
+	float ScheduledAttemptIntervalSeconds = 0.f;
 
 	bool InitializeRandomState();
 	void ResetCadence(EBoidAttackRejection Reason);
 	void RefreshSimulationSubscription();
 	void OnSimulationFrame(float DeltaTime);
 	void DetachSimulation();
-	bool ValidateMuzzle(const FVector& MuzzleLocation, const FCollisionQueryParams& Params) const;
-	bool ValidateLaunch(const FVector& MuzzleLocation, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const;
+	bool ValidateMuzzle(const USphereComponent& ProjectileSphere, const FCollisionQueryParams& Params) const;
+	bool ValidateLaunch(const USphereComponent& ProjectileSphere, const FVector& Direction, AActor* Target, const FCollisionQueryParams& Params) const;
 };
