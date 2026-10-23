@@ -75,9 +75,6 @@ public:
 	bool RecoverWanderFromStall(const UBoxComponent* Bounds, float BoundsMarginCm, float CruiseSpeed, int32 MaxCandidates = 0);
 	void InitializeWander(int32 InAgentId, int32 InitialSeed);
 	FVector TurnFlightHeading(const FVector& DesiredDirection, float MaxTurnRateDeg, float DeltaTime);
-	void HoldAvoidanceDirection(const FVector& Direction, float Seconds);
-	FVector GetHeldAvoidanceDirection() const { return HeldAvoidanceDirection; }
-	float GetAvoidanceHoldSeconds() const { return AvoidanceHoldSeconds; }
 	FVector GetFlightHeading() const { return FlightHeading; }
 	void SetSteeringProfile(UBoidSteeringProfile* Profile);
 	void SetWanderActive(bool bActive);
@@ -86,6 +83,7 @@ public:
 	UBoidSteeringProfile* GetSteeringProfile() const { return ActiveSteeringProfile; }
 	void PrepareSteeringRuntime(UBoidSteeringProfile* Profile);
 	FBoidSteeringRuntimeState& GetSteeringRuntimeState(int32 BehaviorIndex);
+	void ResetSteeringAvoidanceRuntime();
 
 	void UpdateTargetSensing(float ElapsedSeconds);
 	UFUNCTION(BlueprintPure, Category = "Boid|Targeting")
@@ -193,10 +191,8 @@ private:
 	uint64 RangedPhaseOwner = 0;
 	FVector Velocity = FVector::ZeroVector;
 	FVector FlightHeading = FVector::ForwardVector;
-	FVector HeldAvoidanceDirection = FVector::ZeroVector;
 	FVector LastValidWanderPosition = FVector::ZeroVector;
 	bool bHasLastValidWanderPosition = false;
-	float AvoidanceHoldSeconds = 0.0f;
 	int32 AgentId = INDEX_NONE;
 	int32 SimulationSeed = 0;
 	bool bSteeringActive = false;
@@ -207,6 +203,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UBoidSteeringProfile> RuntimeProfile;
 	TArray<FBoidSteeringRuntimeState> SteeringRuntimeStates;
+	uint32 RuntimeProfileSignature = 0;
 	TWeakObjectPtr<AFlyingCharacter> SensedTarget;
 	TWeakObjectPtr<USwarmSimulationSubsystem> SimulationSubsystem;
 	FBoidMovementIntent MovementIntent;

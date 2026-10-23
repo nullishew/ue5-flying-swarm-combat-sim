@@ -57,6 +57,12 @@ struct FSwarmMovementDebugSnapshot
 	FSwarmMovementCommitObservation Commit;
 	FString Stage = TEXT("WAITING FOR SAMPLE");
 	FString EffectiveProfile;
+	FString SteeringConfigurationProblem;
+	FVector OptionalSeparation = FVector::ZeroVector;
+	FVector OptionalAlignment = FVector::ZeroVector;
+	FVector OptionalCohesion = FVector::ZeroVector;
+	FVector OptionalAvoidance = FVector::ZeroVector;
+	bool bPhysicalOverlapProtection = false;
 	float SightLossAge = 0.f;
 	float SightLossGrace = 0.f;
 	float MemoryAge = -1.f;

@@ -432,6 +432,9 @@ void FSwarmDebugPresenter::Update(APlayerController& Controller, USwarmDebugOver
 				InspectorLines.Add(Sample.MemoryAge >= 0.f ? FString::Printf(TEXT("Memory: age %.2fs / remaining %.2fs | valid %s"), Sample.MemoryAge, Sample.MemoryRemaining, Navigation.bHasTransitGoal ? TEXT("YES") : TEXT("NO")) : TEXT("Memory: no remembered sighting"));
 				InspectorLines.Add(Sample.bHasGoal ? FString::Printf(TEXT("Step goal: %.1f cm | arrival radius %.1f cm"), Sample.GoalDistance, Sample.ArrivalRadius) : TEXT("Step goal: NONE"));
 				InspectorLines.Add(FString::Printf(TEXT("Evaluated profile: %s"), Sample.EffectiveProfile.IsEmpty() ? TEXT("NOT EVALUATED") : *Sample.EffectiveProfile));
+				InspectorLines.Add(FString::Printf(TEXT("Physical overlap protection: %s"), Sample.bPhysicalOverlapProtection ? TEXT("ACTIVE") : TEXT("inactive")));
+				InspectorLines.Add(FString::Printf(TEXT("Optional contributions: separation %.2f | alignment %.2f | cohesion %.2f | avoidance %s"), Sample.OptionalSeparation.Size(), Sample.OptionalAlignment.Size(), Sample.OptionalCohesion.Size(), Sample.OptionalAvoidance.IsNearlyZero() ? TEXT("inactive") : TEXT("ACTIVE")));
+				if (!Sample.SteeringConfigurationProblem.IsEmpty()) InspectorLines.Add(TEXT("PROFILE ERROR: ") + Sample.SteeringConfigurationProblem);
 			}
 			else
 			{

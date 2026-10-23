@@ -26,8 +26,13 @@ class FLYINGSWARMCOMBATSIM_API UBoidSteeringProfile : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	UBoidSteeringProfile();
+#if WITH_EDITOR
+	virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override;
+#endif
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Steering", meta = (TitleProperty = "EntryId"))
 	TArray<FBoidSteeringBehaviorEntry> Behaviors;
+	bool ValidateProfile(FString& OutReason) const;
 	/** One primary per phase; configuration only, no mutation or movement. */
 	bool ValidateCombatProfile(FString& OutReason) const;
 };

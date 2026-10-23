@@ -1,12 +1,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/ArrayView.h"
 #include "Math/RandomStream.h"
 #include "UObject/Object.h"
 #include "Swarm/Routing/BoidNavigationTypes.h"
 #include "BoidSteeringBehavior.generated.h"
 
 class AActor;
+
+// Captured once by the simulation; behaviors never query or move neighboring actors.
+struct FBoidSteeringNeighbor
+{
+	FVector Position = FVector::ZeroVector;
+	FVector Velocity = FVector::ZeroVector;
+	float Radius = 0.f;
+	int32 AgentId = INDEX_NONE;
+	bool bSteeringActive = false;
+};
 
 /** Immutable inputs captured before the runner calculates any agent output. */
 struct FBoidSteeringInput
@@ -30,6 +41,8 @@ struct FBoidSteeringInput
 	bool bCoordinatedCombat = false;
 	float DeltaTime = 0.0f;
 	int32 AgentId = INDEX_NONE;
+	float Radius = 0.f;
+	TConstArrayView<FBoidSteeringNeighbor> Neighbors;
 };
 
 /** Direction contribution and optional speed request from one behavior. */
@@ -38,6 +51,7 @@ struct FBoidSteeringResult
 	FVector Direction = FVector::ZeroVector;
 	bool bHasDesiredSpeed = false;
 	float DesiredSpeedCmPerSec = 0.0f;
+	bool bCriticalSeparation = false;
 };
 
 /** Per-agent mutable state. This is never stored on a shared profile/behavior asset. */
@@ -48,6 +62,8 @@ struct FBoidSteeringRuntimeState
 	float DriftChangeRemaining = 0.0f;
 	float DriftYawRateDeg = 0.0f;
 	float DriftPitchRateDeg = 0.0f;
+	FVector HeldAvoidanceDirection = FVector::ZeroVector;
+	float AvoidanceHoldSeconds = 0.f;
 };
 
 /** A native steering algorithm with editor-authored settings and per-agent runtime state. */
@@ -69,6 +85,10 @@ public:
 	/** Captured phase gating; additive contributions never own combat speed. */
 	virtual bool SupportsNavigationPhase(EBoidNavigationPhase Phase) const { return true; }
 	virtual bool IsPrimaryMovementForPhase(EBoidNavigationPhase Phase) const { return false; }
+	virtual bool IsLocalSteeringBehavior() const { return false; }
+	virtual bool ValidateSettings(FString& OutReason) const;
+	virtual float NeighborQueryRadius(const FBoidSteeringInput& Input, float MaximumRadius, float MaximumSpeed) const { return 0.f; }
+	virtual float NeighborPairRadius(const FBoidSteeringInput& Input, const FBoidSteeringNeighbor& Neighbor) const { return NeighborQueryRadius(Input, Neighbor.Radius, Neighbor.Velocity.Size()); }
 	void InitializeRuntime(FBoidSteeringRuntimeState& Runtime, int32 Seed) const;
 	FVector Evaluate(const FBoidSteeringInput& Input, FBoidSteeringRuntimeState& Runtime) const;
 	virtual FBoidSteeringResult EvaluateWithResult(const FBoidSteeringInput& Input,
