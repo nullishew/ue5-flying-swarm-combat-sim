@@ -159,6 +159,9 @@ public:
 	int32 LastFrameCombatControlQueries = 0;
 	void AdoptNavigationRoute(int32 AgentId, const FVector& Goal, const FBoidFlightRouteResult& Route);
 	FBoidNavigationGoal GetNavigationGoal(AFlyingBoid* Boid) const;
+	// Zero means no unhandled remembered goal. Completion never changes actor velocity.
+	uint64 GetTransitGoalRevision(const AFlyingBoid* Boid) const;
+	bool TryCompleteTransitGoal(AFlyingBoid* Boid, uint64 IntentOwner, uint64 MemoryRevision);
 	bool GetDebugMovementView(const AFlyingBoid* Boid, FBoidNavigationGoal& OutGoal, TArray<FVector>& OutRemainingRoute) const;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Swarm|Ranged")
 	FBoidRangedSettings RangedSettings;
@@ -192,6 +195,7 @@ public:
 
 private:
 	friend class FSwarmMembershipIndexTest;
+	friend class FSwarmTransitCompletionTest;
 	friend class AFlyingBoid;
 	// Membership requests are exclusively issued by the agent lifecycle.
 	void RegisterBoid(AFlyingBoid* Boid);
@@ -258,6 +262,12 @@ private:
 		FVector LastSeenPosition = FVector::ZeroVector;
 		FVector GoalTargetPosition = FVector::ZeroVector;
 		double LastSeenAt = -1.;
+		uint64 TransitMemoryRevision = 0;
+		bool bTransitGoalHandled = false;
+		bool bLocalTransitFallback = false;
+		uint64 ReachedTransitMemoryRevision = 0;
+		uint64 ReachedTransitOwner = 0;
+		uint32 ReachedTransitIntentRevision = 0;
 		FBoidNavigationGoal Navigation;
 	};
 
@@ -267,6 +277,7 @@ private:
 	double NavigationTime = 0.;
 	int32 NavigationCursor = 0;
 	void UpdateNavigationGoals(float DeltaTime);
+	void RecordTransitArrival(AFlyingBoid* Boid, uint64 IntentOwner, uint32 IntentRevision, uint64 MemoryRevision, const FVector& Start, bool bUnobstructedMove);
 	void ApplyQueuedRegistrations();
 	void AdvanceStep(float StepTime);
 	void UpdateRangedPositions(float DeltaTime);

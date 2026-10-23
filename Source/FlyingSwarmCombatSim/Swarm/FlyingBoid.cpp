@@ -576,9 +576,10 @@ namespace
 }
 
 void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, float DeltaTime,
-	float CruiseSpeed, const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed, FSwarmMovementCommitObservation* Observation)
+	float CruiseSpeed, const UBoxComponent* Bounds, float BoundsMarginCm, float VisualTurnSpeed, FSwarmMovementCommitObservation* Observation, bool* bUnobstructedMove)
 {
 	if (Observation) *Observation = FSwarmMovementCommitObservation();
+	if (bUnobstructedMove) *bUnobstructedMove = false;
 	if (bDead || DeltaTime <= 0.0f || !FMath::IsFinite(DeltaTime))
 	{
 		if (Observation) Observation->Result = ESwarmMovementCommitResult::InvalidStep;
@@ -594,10 +595,11 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	}
 	Velocity = (Velocity + DesiredAcceleration * DeltaTime).GetClampedToMaxSize(FMath::Max(0.0f, CruiseSpeed));
 	const FVector Start = GetActorLocation();
-	const FVector Delta = BoidFlight::ClampPosition(Start + Velocity * DeltaTime, Transform, Extent) - Start;
+	const FVector RequestedDelta = Velocity * DeltaTime;
+	const FVector Delta = BoidFlight::ClampPosition(Start + RequestedDelta, Transform, Extent) - Start;
 	if (Observation)
 	{
-		Observation->RequestedDelta = Velocity * DeltaTime;
+		Observation->RequestedDelta = RequestedDelta;
 		Observation->ClampedDelta = Delta;
 		Observation->bBoundsClamped = !Delta.Equals(Observation->RequestedDelta, .001f);
 	}
@@ -613,6 +615,7 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 	}
 	FHitResult Hit;
 	const bool bMoveReturned = FlightMovement->SafeMoveUpdatedComponent(Delta, GetActorQuat(), true, Hit);
+	const bool bClearLinearMove = !Hit.bBlockingHit && !Hit.bStartPenetrating && Delta.Equals(RequestedDelta, .001f) && (bMoveReturned || Delta.IsNearlyZero());
 	if (Observation)
 	{
 		Observation->bMoveReturned = bMoveReturned;
@@ -664,6 +667,7 @@ void AFlyingBoid::ApplyWanderAcceleration(const FVector& DesiredAcceleration, fl
 		LastValidWanderPosition = GetActorLocation();
 		bHasLastValidWanderPosition = true;
 	}
+	if (bUnobstructedMove) *bUnobstructedMove = bClearLinearMove && GetActorLocation().Equals(Start + Delta, .001f);
 }
 
 bool AFlyingBoid::ConstrainWanderToBounds(const UBoxComponent* Bounds, float BoundsMarginCm)
